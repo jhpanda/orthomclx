@@ -118,6 +118,11 @@ optionally runs `mcl`, and writes:
 - `run_dir/mclOutput` when `--run-mcl` is used
 - `run_dir/groups.txt` when `--run-mcl` or `--mcl-output` is used
 
+There are two ways to include the MCL step:
+
+- use `--run-mcl` to run MCL directly after `mclInput` is generated
+- use `--mcl-output existing_mclOutput` if you already ran MCL elsewhere
+
 ### 1. Parse BLAST output
 
 ```bash

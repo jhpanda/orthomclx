@@ -216,7 +216,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser(
         "run",
-        help="Run parse-blast and pairs, and optionally convert MCL output to groups",
+        help="Run parse-blast and pairs, optionally run MCL, and write groups.txt",
     )
     run_parser.add_argument("--blast", required=True, help="BLAST output in m8 format")
     run_parser.add_argument(
