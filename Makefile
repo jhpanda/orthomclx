@@ -54,7 +54,7 @@ build/mcl: src/mcl/configure
 	@cd src/mcl && if [ ! -f Makefile ]; then arch=$$(uname -m); \
 		if [ "$$arch" = "arm64" ] || [ "$$arch" = "aarch64" ]; then build_triplet="arm-apple-darwin"; \
 		else build_triplet="$$arch-apple-darwin"; fi; \
-		./configure --build="$$build_triplet"; \
+		CFLAGS="$$CFLAGS -fcommon" ./configure --build="$$build_triplet"; \
 	fi
 	@$(MAKE) -C src/mcl/util libutil.a
 	@$(MAKE) -C src/mcl/src/clew libclew.a
