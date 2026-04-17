@@ -2,9 +2,16 @@ PYTHON ?= python3
 CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra
 
-.PHONY: all clean test build-c-engine build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
+.PHONY: all clean test build-cli build-c-engine build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
 
-all: build/pairs_engine build/indexed_orthologs build/indexed_inparalogs build/indexed_coorthologs build/indexed_rbh
+all: build/orthomclx build/pairs_engine build/indexed_orthologs build/indexed_inparalogs build/indexed_coorthologs build/indexed_rbh
+
+build/orthomclx: src/orthomcl/cli.py
+	mkdir -p build
+	printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'ROOT=$$(cd "$$(dirname "$$0")/.." && pwd)' 'export PYTHONPATH="$$ROOT/src$${PYTHONPATH:+:$$PYTHONPATH}"' 'exec "$(PYTHON)" -m orthomcl.cli "$$@"' > $@
+	chmod +x $@
+
+build-cli: build/orthomclx
 
 build/pairs_engine: src/c/pairs_engine.c
 	mkdir -p build
