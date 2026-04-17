@@ -229,3 +229,23 @@ better runtime, simpler I/O, and easier HPC use.
 `build/` is generated output and can be removed and rebuilt.
 `src/mcl/` is reserved for vendored upstream MCL source.
 `scripts/` contains wrappers; reusable code lives in `src/`.
+
+## References
+
+If you use this package in research, please cite the original OrthoMCL and MCL
+work as appropriate.
+
+OrthoMCL:
+
+- Li L, Stoeckert CJ Jr, Roos DS. OrthoMCL: identification of ortholog groups
+  for eukaryotic genomes. Genome Research. 2003;13(9):2178-2189.
+
+MCL:
+
+- van Dongen S. Graph Clustering by Flow Simulation. PhD thesis, University of
+  Utrecht, 2000.
+- van Dongen S. A cluster algorithm for graphs. Technical Report INS-R0010,
+  National Research Institute for Mathematics and Computer Science in the
+  Netherlands, 2000.
+- Enright AJ, Van Dongen S, Ouzounis CA. An efficient algorithm for large-scale
+  detection of protein families. Nucleic Acids Research. 2002;30(7):1575-1584.
