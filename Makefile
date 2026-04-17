@@ -4,7 +4,7 @@ CFLAGS ?= -O3 -std=c11 -Wall -Wextra
 
 .PHONY: all clean test build-cli build-c-engine build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
 
-all: build/orthomclx build/pairs_engine build/indexed_orthologs build/indexed_inparalogs build/indexed_coorthologs build/indexed_rbh
+all: build/orthomclx build/pairs_engine build/indexed_orthologs build/indexed_inparalogs build/indexed_coorthologs build/indexed_rbh build/mcl
 
 build/orthomclx: src/orthomcl/cli.py
 	mkdir -p build
@@ -43,19 +43,31 @@ build/indexed_rbh: src/c/indexed_rbh.c
 
 build-indexed-rbh: build/indexed_rbh
 
-build-mcl:
+build/mcl: src/mcl/configure
 	mkdir -p build
-	@if [ -x src/mcl/configure ] || [ -f src/mcl/Makefile ] || [ -f src/mcl/makefile ]; then \
-		echo "Building vendored MCL from src/mcl"; \
-		$(MAKE) -C src/mcl; \
-		if [ -x src/mcl/bin/mcl ]; then cp src/mcl/bin/mcl build/mcl; \
-		elif [ -x src/mcl/mcl ]; then cp src/mcl/mcl build/mcl; \
-		else echo "Built src/mcl but could not find the mcl executable."; exit 1; fi; \
-	else \
+	@if [ ! -x src/mcl/configure ]; then \
 		echo "No vendored MCL source found in src/mcl."; \
 		echo "Place the upstream MCL source tree in src/mcl/ and rerun make build-mcl."; \
 		exit 1; \
 	fi
+	@echo "Building vendored MCL from src/mcl"
+	@cd src/mcl && if [ ! -f Makefile ]; then arch=$$(uname -m); \
+		if [ "$$arch" = "arm64" ] || [ "$$arch" = "aarch64" ]; then build_triplet="arm-apple-darwin"; \
+		else build_triplet="$$arch-apple-darwin"; fi; \
+		./configure --build="$$build_triplet"; \
+	fi
+	@$(MAKE) -C src/mcl/util libutil.a
+	@$(MAKE) -C src/mcl/src/clew libclew.a
+	@$(MAKE) -C src/mcl/src/mcl libmcl.a
+	@$(MAKE) -C src/mcl/src/gryphon libgryphon.a
+	@$(MAKE) -C src/mcl/src/impala libimpala.a
+	@$(MAKE) -C src/mcl/src/shmcl mcl
+	@if [ -x src/mcl/src/shmcl/mcl ]; then cp src/mcl/src/shmcl/mcl build/mcl; \
+	elif [ -x src/mcl/bin/mcl ]; then cp src/mcl/bin/mcl build/mcl; \
+	elif [ -x src/mcl/mcl ]; then cp src/mcl/mcl build/mcl; \
+	else echo "Built src/mcl but could not find the mcl executable."; exit 1; fi
+
+build-mcl: build/mcl
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v
