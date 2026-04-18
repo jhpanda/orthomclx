@@ -1,6 +1,7 @@
 PYTHON ?= python3
 CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra
+MCL_CFLAGS ?= -g -O2 -D_THREAD_SAFE -fcommon
 
 .PHONY: all clean test build-cli build-c-engine build-parse-blast-compiled build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
 
@@ -56,23 +57,20 @@ build/mcl: src/mcl/configure
 		echo "Place the upstream MCL source tree in src/mcl/ and rerun make build-mcl."; \
 		exit 1; \
 	fi
-	@echo "Building vendored MCL from src/mcl"
-	@cd src/mcl && if [ ! -f Makefile ]; then build_triplet=$$(sh autofoo/config.guess); \
-		if ! CFLAGS="$$CFLAGS -fcommon" ./configure --build="$$build_triplet"; then \
-			arch=$$(uname -m); \
-			if [ "$$arch" = "arm64" ] || [ "$$arch" = "aarch64" ]; then \
-				CFLAGS="$$CFLAGS -fcommon" ./configure --build="arm-apple-darwin"; \
-			else \
-				exit 1; \
-			fi; \
-		fi; \
-	fi
-	@$(MAKE) -C src/mcl/util libutil.a
-	@$(MAKE) -C src/mcl/src/clew libclew.a
-	@$(MAKE) -C src/mcl/src/mcl libmcl.a
-	@$(MAKE) -C src/mcl/src/gryphon libgryphon.a
-	@$(MAKE) -C src/mcl/src/impala libimpala.a
-	@$(MAKE) -C src/mcl/src/shmcl mcl
+	@echo "Reconfiguring vendored MCL for the current machine"
+	@if [ -f src/mcl/Makefile ]; then $(MAKE) -C src/mcl distclean >/dev/null 2>&1 || true; fi
+	@cd src/mcl && build_triplet=$$(sh autofoo/config.guess 2>/dev/null || true); \
+		if [ -n "$$build_triplet" ]; then \
+			CFLAGS="$(MCL_CFLAGS)" ./configure --build="$$build_triplet" || CFLAGS="$(MCL_CFLAGS)" ./configure; \
+		else \
+			CFLAGS="$(MCL_CFLAGS)" ./configure; \
+		fi
+	@$(MAKE) -C src/mcl/util CFLAGS="$(MCL_CFLAGS)" libutil.a
+	@$(MAKE) -C src/mcl/src/clew CFLAGS="$(MCL_CFLAGS)" libclew.a
+	@$(MAKE) -C src/mcl/src/mcl CFLAGS="$(MCL_CFLAGS)" libmcl.a
+	@$(MAKE) -C src/mcl/src/gryphon CFLAGS="$(MCL_CFLAGS)" libgryphon.a
+	@$(MAKE) -C src/mcl/src/impala CFLAGS="$(MCL_CFLAGS)" libimpala.a
+	@$(MAKE) -C src/mcl/src/shmcl CFLAGS="$(MCL_CFLAGS)" mcl
 	@if [ -x src/mcl/src/shmcl/mcl ]; then cp src/mcl/src/shmcl/mcl build/mcl; \
 	elif [ -x src/mcl/bin/mcl ]; then cp src/mcl/bin/mcl build/mcl; \
 	elif [ -x src/mcl/mcl ]; then cp src/mcl/mcl build/mcl; \
