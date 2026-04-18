@@ -78,6 +78,50 @@ static char *xstrdup(const char *src) {
   return dst;
 }
 
+static int read_line_alloc(FILE *handle, char **buffer, size_t *capacity) {
+  if (*buffer == NULL || *capacity == 0) {
+    *capacity = 1024;
+    *buffer = (char *)xmalloc(*capacity);
+  }
+  size_t length = 0;
+  for (;;) {
+    int ch = fgetc(handle);
+    if (ch == EOF) {
+      if (length == 0) return 0;
+      break;
+    }
+    if (length + 1 >= *capacity) {
+      *capacity *= 2;
+      *buffer = (char *)xrealloc(*buffer, *capacity);
+    }
+    (*buffer)[length++] = (char)ch;
+    if (ch == '\n') break;
+  }
+  (*buffer)[length] = '\0';
+  return 1;
+}
+
+static int split_tab_fields(char *line, char **fields, int max_fields) {
+  int count = 0;
+  char *cursor = line;
+  while (*cursor) {
+    if (count >= max_fields) return max_fields + 1;
+    fields[count++] = cursor;
+    while (*cursor && *cursor != '\t' && *cursor != '\n' && *cursor != '\r') {
+      cursor++;
+    }
+    if (!*cursor) break;
+    if (*cursor == '\t') {
+      *cursor = '\0';
+      cursor++;
+      continue;
+    }
+    *cursor = '\0';
+    break;
+  }
+  return count;
+}
+
 static void push_record(RecordVec *vec, SimilarityRecord item) {
   if (vec->len == vec->cap) {
     vec->cap = vec->cap ? vec->cap * 2 : 64;
@@ -522,16 +566,10 @@ static RecordVec read_records(const char *path) {
   if (!handle) die("Could not open similarSequences file");
   char *line = NULL;
   size_t cap = 0;
-  while (getline(&line, &cap, handle) != -1) {
+  while (read_line_alloc(handle, &line, &cap)) {
     if (line[0] == '\n' || line[0] == '\0') continue;
     char *fields[8];
-    int idx = 0;
-    char *saveptr = NULL;
-    char *token = strtok_r(line, "\t\n", &saveptr);
-    while (token && idx < 8) {
-      fields[idx++] = token;
-      token = strtok_r(NULL, "\t\n", &saveptr);
-    }
+    int idx = split_tab_fields(line, fields, 8);
     if (idx != 8) die("similarSequences line does not have 8 columns");
     SimilarityRecord record;
     record.query_id = xstrdup(fields[0]);

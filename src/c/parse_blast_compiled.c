@@ -96,6 +96,35 @@ static void report_parser_progress(uint64_t line_number, uint64_t record_count, 
           taxon_count);
 }
 
+static int is_split_space(char ch) {
+  return ch == ' ' || ch == '\t';
+}
+
+static int split_whitespace_fields(char *line, char **fields, int max_fields) {
+  int count = 0;
+  char *cursor = line;
+  while (*cursor) {
+    while (*cursor && is_split_space(*cursor)) {
+      cursor++;
+    }
+    if (!*cursor) {
+      break;
+    }
+    if (count >= max_fields) {
+      return max_fields + 1;
+    }
+    fields[count++] = cursor;
+    while (*cursor && !is_split_space(*cursor)) {
+      cursor++;
+    }
+    if (*cursor) {
+      *cursor = '\0';
+      cursor++;
+    }
+  }
+  return count;
+}
+
 static void *xmalloc(size_t size) {
   void *ptr = malloc(size);
   if (ptr == NULL) {
@@ -118,6 +147,33 @@ static void *xrealloc(void *ptr, size_t size) {
     die("Out of memory");
   }
   return result;
+}
+
+static int read_line_alloc(FILE *handle, char **buffer, size_t *capacity) {
+  if (*buffer == NULL || *capacity == 0) {
+    *capacity = 1024;
+    *buffer = (char *)xmalloc(*capacity);
+  }
+  size_t length = 0;
+  for (;;) {
+    int ch = fgetc(handle);
+    if (ch == EOF) {
+      if (length == 0) {
+        return 0;
+      }
+      break;
+    }
+    if (length + 1 >= *capacity) {
+      *capacity *= 2;
+      *buffer = (char *)xrealloc(*buffer, *capacity);
+    }
+    (*buffer)[length++] = (char)ch;
+    if (ch == '\n') {
+      break;
+    }
+  }
+  (*buffer)[length] = '\0';
+  return 1;
 }
 
 static char *xstrdup(const char *value) {
@@ -402,11 +458,9 @@ static void read_fasta_lengths(const char *fasta_dir, GeneTable *genes) {
 
     char *line = NULL;
     size_t line_capacity = 0;
-    ssize_t line_length = 0;
     char *gene_id = NULL;
     int gene_length = 0;
-    while ((line_length = getline(&line, &line_capacity, handle)) != -1) {
-      (void) line_length;
+    while (read_line_alloc(handle, &line, &line_capacity)) {
       trim_line(line);
       if (line[0] == '\0') {
         continue;
@@ -613,10 +667,8 @@ static void parse_blast_to_compiled(const char *blast_path, const char *fasta_di
 
   char *line = NULL;
   size_t line_capacity = 0;
-  ssize_t line_length = 0;
   uint64_t line_number = 0;
-  while ((line_length = getline(&line, &line_capacity, blast_handle)) != -1) {
-    (void) line_length;
+  while (read_line_alloc(blast_handle, &line, &line_capacity)) {
     line_number++;
     trim_line(line);
     if (line[0] == '\0') {
@@ -625,13 +677,8 @@ static void parse_blast_to_compiled(const char *blast_path, const char *fasta_di
 
     char *fields[12];
     int field_count = 0;
-    char *saveptr = NULL;
-    char *token = strtok_r(line, " \t", &saveptr);
-    while (token != NULL && field_count < 12) {
-      fields[field_count++] = token;
-      token = strtok_r(NULL, " \t", &saveptr);
-    }
-    if (field_count != 12 || token != NULL) {
+    field_count = split_whitespace_fields(line, fields, 12);
+    if (field_count != 12) {
       fprintf(stderr, "BLAST line %llu does not have 12 columns\n", (unsigned long long) line_number);
       exit(1);
     }

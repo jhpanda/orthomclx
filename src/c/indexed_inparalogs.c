@@ -116,6 +116,46 @@ static char *xstrdup(const char *src) {
   return dst;
 }
 
+static int read_line_alloc(FILE *handle, char **buffer, size_t *capacity) {
+  if (*buffer == NULL || *capacity == 0) {
+    *capacity = 1024;
+    *buffer = (char *)xmalloc(*capacity);
+  }
+  size_t length = 0;
+  for (;;) {
+    int ch = fgetc(handle);
+    if (ch == EOF) {
+      if (length == 0) return 0;
+      break;
+    }
+    if (length + 1 >= *capacity) {
+      *capacity *= 2;
+      *buffer = (char *)xrealloc(*buffer, *capacity);
+    }
+    (*buffer)[length++] = (char)ch;
+    if (ch == '\n') break;
+  }
+  (*buffer)[length] = '\0';
+  return 1;
+}
+
+static void split_first_two_tab_fields(char *line, char **first, char **second) {
+  char *tab = strchr(line, '\t');
+  if (!tab) {
+    *first = NULL;
+    *second = NULL;
+    return;
+  }
+  *tab = '\0';
+  *first = line;
+  *second = tab + 1;
+  char *end = *second;
+  while (*end && *end != '\t' && *end != '\n' && *end != '\r') {
+    end++;
+  }
+  *end = '\0';
+}
+
 static void push_record(RecordVec *vec, SimilarityRecordBin item) {
   if (vec->len == vec->cap) {
     vec->cap = vec->cap ? vec->cap * 2 : 1024;
@@ -231,7 +271,7 @@ static StringVec read_index_values(const char *path) {
   if (!handle) die("Could not open index file");
   char *line = NULL;
   size_t cap = 0;
-  while (getline(&line, &cap, handle) != -1) {
+  while (read_line_alloc(handle, &line, &cap)) {
     char *tab = strchr(line, '\t');
     if (!tab) die("Invalid index file");
     char *value = tab + 1;
@@ -380,10 +420,10 @@ static bool *load_ortholog_id_mask(const char *orthologs_path, NameIndexVec *pro
   if (!handle) die("Could not open orthologs file");
   char *line = NULL;
   size_t cap = 0;
-  while (getline(&line, &cap, handle) != -1) {
-    char *saveptr = NULL;
-    char *seq_a = strtok_r(line, "\t\n", &saveptr);
-    char *seq_b = strtok_r(NULL, "\t\n", &saveptr);
+  while (read_line_alloc(handle, &line, &cap)) {
+    char *seq_a = NULL;
+    char *seq_b = NULL;
+    split_first_two_tab_fields(line, &seq_a, &seq_b);
     if (!seq_a || !seq_b) die("Invalid ortholog file");
     int a = name_index_lookup(protein_map, seq_a);
     int b = name_index_lookup(protein_map, seq_b);

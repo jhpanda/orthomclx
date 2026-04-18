@@ -107,6 +107,29 @@ static char *xstrdup(const char *src) {
   return dst;
 }
 
+static int read_line_alloc(FILE *handle, char **buffer, size_t *capacity) {
+  if (*buffer == NULL || *capacity == 0) {
+    *capacity = 1024;
+    *buffer = (char *)xmalloc(*capacity);
+  }
+  size_t length = 0;
+  for (;;) {
+    int ch = fgetc(handle);
+    if (ch == EOF) {
+      if (length == 0) return 0;
+      break;
+    }
+    if (length + 1 >= *capacity) {
+      *capacity *= 2;
+      *buffer = (char *)xrealloc(*buffer, *capacity);
+    }
+    (*buffer)[length++] = (char)ch;
+    if (ch == '\n') break;
+  }
+  (*buffer)[length] = '\0';
+  return 1;
+}
+
 static void push_record(RecordVec *vec, SimilarityRecordBin item) {
   if (vec->len == vec->cap) {
     vec->cap = vec->cap ? vec->cap * 2 : 1024;
@@ -218,7 +241,7 @@ static StringVec read_index_values(const char *path) {
   if (!handle) die("Could not open index file");
   char *line = NULL;
   size_t cap = 0;
-  while (getline(&line, &cap, handle) != -1) {
+  while (read_line_alloc(handle, &line, &cap)) {
     char *tab = strchr(line, '\t');
     if (!tab) die("Invalid index file");
     char *value = tab + 1;
