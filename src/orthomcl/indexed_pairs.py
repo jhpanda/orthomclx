@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import os
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Union
 
@@ -53,7 +53,7 @@ def run_indexed_pairs(
     out_dir: Union[str, Path],
     percent_match_cutoff: float,
     evalue_cutoff: float,
-    jobs: int = 1,
+    threads: int = 1,
 ) -> IndexedPairsSummary:
     compiled_dir = Path(compiled_dir)
     out_dir = Path(out_dir)
@@ -69,45 +69,40 @@ def run_indexed_pairs(
     stage_dir.mkdir(parents=True, exist_ok=True)
     cutoff_mant, cutoff_exp = parse_evalue_cutoff(evalue_cutoff)
 
-    print(f"[orthomclx] building orthologs (jobs={jobs}, pcut={percent_match_cutoff}, ecut={evalue_cutoff})")
+    print(f"[orthomclx] building orthologs (threads={threads}, pcut={percent_match_cutoff}, ecut={evalue_cutoff})")
 
-    orthologs_raw = run_parallel_stage(
+    orthologs_raw = run_threaded_ortholog_stage(
         binary=orth_bin,
         base_args=[
             str(compiled_dir / "similarities.bin"),
             str(compiled_dir / "proteins.tsv"),
             str(compiled_dir / "taxa.tsv"),
         ],
-        extra_before_out=[],
-        out_base_dir=stage_dir / "orthologs",
-        output_name="orthologs.indexed.raw.tsv",
-        merged_output=stage_dir / "orthologs.merged.raw.tsv",
+        out_dir=stage_dir / "orthologs",
         percent_match_cutoff=percent_match_cutoff,
         cutoff_mant=cutoff_mant,
         cutoff_exp=cutoff_exp,
-        jobs=jobs,
+        threads=threads,
     )
     ortholog_edges = normalize_raw_orthologs(read_raw_orthologs(orthologs_raw), "ortholog")
     orthologs_file = out_dir / "pairs" / "orthologs.txt"
     write_edge_records(orthologs_file, ortholog_edges)
     print(f"[orthomclx] orthologs complete: {len(ortholog_edges)} edges")
 
-    print(f"[orthomclx] building inparalogs (jobs={jobs})")
-    inparalogs_raw = run_parallel_stage(
+    print(f"[orthomclx] building inparalogs (threads={threads})")
+    inparalogs_raw = run_threaded_inparalog_stage(
         binary=inpara_bin,
         base_args=[
             str(compiled_dir / "similarities.bin"),
             str(compiled_dir / "proteins.tsv"),
             str(compiled_dir / "taxa.tsv"),
         ],
-        extra_before_out=[str(orthologs_file)],
-        out_base_dir=stage_dir / "inparalogs",
-        output_name="inparalogs.indexed.raw.tsv",
-        merged_output=stage_dir / "inparalogs.merged.raw.tsv",
+        orthologs_file=orthologs_file,
+        out_dir=stage_dir / "inparalogs",
         percent_match_cutoff=percent_match_cutoff,
         cutoff_mant=cutoff_mant,
         cutoff_exp=cutoff_exp,
-        jobs=jobs,
+        threads=threads,
     )
     inparalog_edges = normalize_raw_inparalogs(
         read_raw_inparalogs(inparalogs_raw),
@@ -117,22 +112,21 @@ def run_indexed_pairs(
     write_edge_records(inparalogs_file, inparalog_edges)
     print(f"[orthomclx] inparalogs complete: {len(inparalog_edges)} edges")
 
-    print(f"[orthomclx] building coorthologs (jobs={jobs})")
-    coorthologs_raw = run_parallel_stage(
+    print(f"[orthomclx] building coorthologs (threads={threads})")
+    coorthologs_raw = run_threaded_coortholog_stage(
         binary=co_bin,
         base_args=[
             str(compiled_dir / "similarities.bin"),
             str(compiled_dir / "proteins.tsv"),
             str(compiled_dir / "taxa.tsv"),
         ],
-        extra_before_out=[str(orthologs_file), str(inparalogs_file)],
-        out_base_dir=stage_dir / "coorthologs",
-        output_name="coorthologs.indexed.raw.tsv",
-        merged_output=stage_dir / "coorthologs.merged.raw.tsv",
+        orthologs_file=orthologs_file,
+        inparalogs_file=inparalogs_file,
+        out_dir=stage_dir / "coorthologs",
         percent_match_cutoff=percent_match_cutoff,
         cutoff_mant=cutoff_mant,
         cutoff_exp=cutoff_exp,
-        jobs=jobs,
+        threads=threads,
     )
     coortholog_edges = normalize_raw_orthologs(read_raw_orthologs(coorthologs_raw), "coortholog")
     coorthologs_file = out_dir / "pairs" / "coorthologs.txt"
@@ -141,20 +135,20 @@ def run_indexed_pairs(
 
     rbh_dir = stage_dir / "rbh"
     rbh_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[orthomclx] building strict 1:1 RBH (jobs={jobs})")
-    rbh_merged = run_parallel_rbh_stage(
+    print(f"[orthomclx] building strict 1:1 RBH (threads={threads})")
+    rbh_merged = run_threaded_rbh_stage(
         binary=rbh_bin,
         base_args=[
             str(compiled_dir / "similarities.bin"),
             str(compiled_dir / "proteins.tsv"),
             str(compiled_dir / "taxa.tsv"),
         ],
-        out_base_dir=rbh_dir,
+        out_dir=rbh_dir,
         merged_output=stage_dir / "rbh_1to1.merged.txt",
         percent_match_cutoff=percent_match_cutoff,
         cutoff_mant=cutoff_mant,
         cutoff_exp=cutoff_exp,
-        jobs=jobs,
+        threads=threads,
     )
     rbh_file = out_dir / "pairs" / "rbh_1to1.txt"
     rbh_file.parent.mkdir(parents=True, exist_ok=True)
@@ -179,120 +173,99 @@ def run_indexed_pairs(
     )
 
 
-def run_parallel_rbh_stage(
+def run_threaded_ortholog_stage(
     *,
     binary: Path,
     base_args: List[str],
-    out_base_dir: Path,
+    out_dir: Path,
+    percent_match_cutoff: float,
+    cutoff_mant: float,
+    cutoff_exp: int,
+    threads: int,
+) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = (
+        [str(binary)]
+        + base_args
+        + [str(out_dir), str(percent_match_cutoff), str(cutoff_mant), str(cutoff_exp)]
+    )
+    env = dict(os.environ)
+    env["ORTHOMCLX_THREADS"] = str(max(1, threads))
+    subprocess.run(cmd, check=True, env=env)
+    return out_dir / "orthologs.indexed.raw.tsv"
+
+
+def run_threaded_rbh_stage(
+    *,
+    binary: Path,
+    base_args: List[str],
+    out_dir: Path,
     merged_output: Path,
     percent_match_cutoff: float,
     cutoff_mant: float,
     cutoff_exp: int,
-    jobs: int,
+    threads: int,
 ) -> Path:
-    jobs = max(1, jobs)
-    out_base_dir.mkdir(parents=True, exist_ok=True)
-    shard_dirs = [out_base_dir / f"shard_{index}" for index in range(jobs)]
-    for shard_dir in shard_dirs:
-        shard_dir.mkdir(parents=True, exist_ok=True)
-
-    def run_one(shard_index: int) -> Path:
-        shard_dir = shard_dirs[shard_index]
-        cmd = (
-            [str(binary)]
-            + base_args
-            + [str(shard_dir), str(percent_match_cutoff), str(cutoff_mant), str(cutoff_exp), str(shard_index), str(jobs)]
-        )
-        subprocess.run(cmd, check=True)
-        return shard_dir / "rbh_1to1.txt"
-
-    if jobs == 1:
-        shard_files = [run_one(0)]
-    else:
-        with ThreadPoolExecutor(max_workers=jobs) as executor:
-            shard_files = list(executor.map(run_one, range(jobs)))
-
-    merge_plain_text_files(shard_files, merged_output)
-    return merged_output
-
-
-def run_parallel_stage(
-    *,
-    binary: Path,
-    base_args: List[str],
-    extra_before_out: List[str],
-    out_base_dir: Path,
-    output_name: str,
-    merged_output: Path,
-    percent_match_cutoff: float,
-    cutoff_mant: float,
-    cutoff_exp: int,
-    jobs: int,
-) -> Path:
-    jobs = max(1, jobs)
-    out_base_dir.mkdir(parents=True, exist_ok=True)
-    shard_dirs = [out_base_dir / f"shard_{index}" for index in range(jobs)]
-    for shard_dir in shard_dirs:
-        shard_dir.mkdir(parents=True, exist_ok=True)
-
-    def run_one(shard_index: int) -> Path:
-        shard_dir = shard_dirs[shard_index]
-        cmd = (
-            [str(binary)]
-            + base_args
-            + extra_before_out
-            + [str(shard_dir), str(percent_match_cutoff), str(cutoff_mant), str(cutoff_exp), str(shard_index), str(jobs)]
-        )
-        subprocess.run(cmd, check=True)
-        return shard_dir / output_name
-
-    if jobs == 1:
-        shard_files = [run_one(0)]
-    else:
-        with ThreadPoolExecutor(max_workers=jobs) as executor:
-            shard_files = list(executor.map(run_one, range(jobs)))
-
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = (
+        [str(binary)]
+        + base_args
+        + [str(out_dir), str(percent_match_cutoff), str(cutoff_mant), str(cutoff_exp)]
+    )
+    env = dict(os.environ)
+    env["ORTHOMCLX_THREADS"] = str(max(1, threads))
+    subprocess.run(cmd, check=True, env=env)
+    source = out_dir / "rbh_1to1.txt"
     merged_output.parent.mkdir(parents=True, exist_ok=True)
-    merge_edge_files(shard_files, merged_output)
+    merged_output.write_text(source.read_text())
     return merged_output
 
 
-def merge_edge_files(shard_files: List[Path], output_path: Path) -> None:
-    merged: dict[tuple[str, ...], str] = {}
-    for shard_file in shard_files:
-        if not shard_file.exists():
-            continue
-        with shard_file.open() as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                fields = line.split("\t")
-                key = tuple(fields[:-1])
-                value = fields[-1]
-                existing = merged.get(key)
-                if existing is not None and existing != value:
-                    raise ValueError(f"Conflicting scores for {key}: {existing} vs {value}")
-                merged[key] = value
-    with output_path.open("w") as handle:
-        for key in sorted(merged):
-            handle.write("\t".join(key) + f"\t{merged[key]}\n")
+def run_threaded_inparalog_stage(
+    *,
+    binary: Path,
+    base_args: List[str],
+    orthologs_file: Path,
+    out_dir: Path,
+    percent_match_cutoff: float,
+    cutoff_mant: float,
+    cutoff_exp: int,
+    threads: int,
+) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = (
+        [str(binary)]
+        + base_args
+        + [str(orthologs_file), str(out_dir), str(percent_match_cutoff), str(cutoff_mant), str(cutoff_exp)]
+    )
+    env = dict(os.environ)
+    env["ORTHOMCLX_THREADS"] = str(max(1, threads))
+    subprocess.run(cmd, check=True, env=env)
+    return out_dir / "inparalogs.indexed.raw.tsv"
 
 
-def merge_plain_text_files(shard_files: List[Path], output_path: Path) -> None:
-    merged: set[str] = set()
-    for shard_file in shard_files:
-        if not shard_file.exists():
-            continue
-        with shard_file.open() as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-                if line:
-                    merged.add(line)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w") as handle:
-        for line in sorted(merged):
-            handle.write(f"{line}\n")
+def run_threaded_coortholog_stage(
+    *,
+    binary: Path,
+    base_args: List[str],
+    orthologs_file: Path,
+    inparalogs_file: Path,
+    out_dir: Path,
+    percent_match_cutoff: float,
+    cutoff_mant: float,
+    cutoff_exp: int,
+    threads: int,
+) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = (
+        [str(binary)]
+        + base_args
+        + [str(orthologs_file), str(inparalogs_file), str(out_dir), str(percent_match_cutoff), str(cutoff_mant), str(cutoff_exp)]
+    )
+    env = dict(os.environ)
+    env["ORTHOMCLX_THREADS"] = str(max(1, threads))
+    subprocess.run(cmd, check=True, env=env)
+    return out_dir / "coorthologs.indexed.raw.tsv"
 
 
 def read_edge_records(path: Path, edge_type: str) -> list[EdgeRecord]:

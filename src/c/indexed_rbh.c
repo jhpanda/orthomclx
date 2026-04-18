@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 typedef struct {
   uint32_t query_id;
@@ -52,6 +55,19 @@ typedef struct {
   size_t len;
   size_t cap;
 } BestHitVec;
+
+#ifdef _OPENMP
+typedef struct {
+  size_t start;
+  size_t end;
+} GroupRange;
+
+typedef struct {
+  GroupRange *items;
+  size_t len;
+  size_t cap;
+} GroupRangeVec;
+#endif
 
 static RecordVec g_records = {0};
 
@@ -116,6 +132,23 @@ static void push_best_hit(BestHitVec *vec, BestHitGroup item) {
     vec->items = (BestHitGroup *)xrealloc(vec->items, vec->cap * sizeof(BestHitGroup));
   }
   vec->items[vec->len++] = item;
+}
+
+#ifdef _OPENMP
+static void push_group_range(GroupRangeVec *vec, GroupRange item) {
+  if (vec->len == vec->cap) {
+    vec->cap = vec->cap ? vec->cap * 2 : 256;
+    vec->items = (GroupRange *)xrealloc(vec->items, vec->cap * sizeof(GroupRange));
+  }
+  vec->items[vec->len++] = item;
+}
+#endif
+
+static int get_requested_thread_count(void) {
+  const char *value = getenv("ORTHOMCLX_THREADS");
+  if (!value || !*value) return 1;
+  int threads = atoi(value);
+  return threads > 0 ? threads : 1;
 }
 
 static int cmp_best_hit_key(const void *left, const void *right) {
@@ -201,8 +234,124 @@ static bool passes_evalue_cutoff(const SimilarityRecordBin *record, float cutoff
   return record->evalue_mant <= cutoff_mant;
 }
 
+#ifdef _OPENMP
+static GroupRangeVec build_group_ranges(RefVec *sorted_refs) {
+  GroupRangeVec ranges = {0};
+  size_t i = 0;
+  while (i < sorted_refs->len) {
+    const SimilarityRecordBin *first = &g_records.items[sorted_refs->items[i].record_index];
+    uint32_t query_id = first->query_id;
+    uint32_t subject_taxon_id = first->subject_taxon_id;
+    size_t end = i;
+    while (end < sorted_refs->len) {
+      const SimilarityRecordBin *record = &g_records.items[sorted_refs->items[end].record_index];
+      if (record->query_id != query_id || record->subject_taxon_id != subject_taxon_id) break;
+      end++;
+    }
+    GroupRange range;
+    range.start = i;
+    range.end = end;
+    push_group_range(&ranges, range);
+    i = end;
+  }
+  return ranges;
+}
+#endif
+
 static BestHitVec build_best_hits(RefVec *sorted_refs, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp) {
   BestHitVec groups = {0};
+#ifdef _OPENMP
+  int requested_threads = get_requested_thread_count();
+  if (requested_threads > 1) {
+    omp_set_num_threads(requested_threads);
+  }
+  int thread_count = omp_get_max_threads();
+  if (thread_count < 1) thread_count = 1;
+  fprintf(stderr, "[indexed_rbh] using OpenMP threads=%d\n", thread_count);
+  BestHitVec *thread_groups = (BestHitVec *)calloc((size_t)thread_count, sizeof(BestHitVec));
+  if (!thread_groups) die("Out of memory");
+  GroupRangeVec ranges = build_group_ranges(sorted_refs);
+  uint64_t processed_groups = 0;
+
+#pragma omp parallel
+  {
+    int thread_id = omp_get_thread_num();
+    BestHitVec *local_groups = &thread_groups[thread_id];
+
+#pragma omp for schedule(dynamic, 1024)
+    for (size_t range_index = 0; range_index < ranges.len; range_index++) {
+      size_t start = ranges.items[range_index].start;
+      size_t end = ranges.items[range_index].end;
+      const SimilarityRecordBin *first = &g_records.items[sorted_refs->items[start].record_index];
+      uint32_t query_id = first->query_id;
+      uint32_t query_taxon_id = first->query_taxon_id;
+      uint32_t subject_taxon_id = first->subject_taxon_id;
+
+      BestHitGroup group;
+      group.query_id = query_id;
+      group.query_taxon_id = query_taxon_id;
+      group.subject_taxon_id = subject_taxon_id;
+      group.best_subject_id = 0;
+      group.best_evalue_exp = 0;
+      group.best_evalue_mant = 0.0f;
+      group.unique_best = false;
+      bool have_best = false;
+
+      for (size_t pos = start; pos < end; pos++) {
+        const SimilarityRecordBin *record = &g_records.items[sorted_refs->items[pos].record_index];
+        if (record->query_taxon_id != record->subject_taxon_id &&
+            record->percent_match >= percent_match_cutoff &&
+            passes_evalue_cutoff(record, cutoff_mant, cutoff_exp)) {
+          if (!have_best) {
+            group.best_subject_id = record->subject_id;
+            group.best_evalue_exp = record->evalue_exp;
+            group.best_evalue_mant = record->evalue_mant;
+            group.unique_best = true;
+            have_best = true;
+          } else if (record->evalue_exp == group.best_evalue_exp &&
+                     record->evalue_mant == group.best_evalue_mant &&
+                     record->subject_id != group.best_subject_id) {
+            group.unique_best = false;
+          }
+        }
+      }
+
+      if (have_best) push_best_hit(local_groups, group);
+      uint64_t current_groups = 0;
+#pragma omp atomic capture
+      current_groups = ++processed_groups;
+      if (current_groups % 100000ULL == 0) {
+#pragma omp critical
+        fprintf(stderr, "[indexed_rbh] threads=%d processed %llu/%zu best-hit groups\n",
+                thread_count,
+                (unsigned long long)current_groups,
+                ranges.len);
+      }
+    }
+  }
+
+  size_t total_groups = 0;
+  for (int i = 0; i < thread_count; i++) {
+    total_groups += thread_groups[i].len;
+  }
+  groups.items = (BestHitGroup *)xmalloc((total_groups ? total_groups : 1) * sizeof(BestHitGroup));
+  groups.len = total_groups;
+  groups.cap = total_groups;
+  size_t offset = 0;
+  for (int i = 0; i < thread_count; i++) {
+    if (thread_groups[i].len) {
+      memcpy(groups.items + offset, thread_groups[i].items, thread_groups[i].len * sizeof(BestHitGroup));
+      offset += thread_groups[i].len;
+    }
+    free(thread_groups[i].items);
+  }
+  free(thread_groups);
+  free(ranges.items);
+#else
+  if (get_requested_thread_count() > 1) {
+    fprintf(stderr, "[indexed_rbh] requested %d threads, but this binary was built without OpenMP; falling back to single-threaded execution\n",
+            get_requested_thread_count());
+  }
   size_t i = 0;
   while (i < sorted_refs->len) {
     if (i > 0 && i % 1000000 == 0) {
@@ -248,6 +397,7 @@ static BestHitVec build_best_hits(RefVec *sorted_refs, float percent_match_cutof
     if (have_best) push_best_hit(&groups, group);
     i = end;
   }
+#endif
   qsort(groups.items, groups.len, sizeof(BestHitGroup), cmp_best_hit_key);
   return groups;
 }

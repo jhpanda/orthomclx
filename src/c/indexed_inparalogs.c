@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 typedef struct {
   uint32_t query_id;
@@ -186,6 +189,15 @@ static void push_taxon_agg(TaxonAggVec *vec, TaxonAgg item) {
     vec->items = (TaxonAgg *)xrealloc(vec->items, vec->cap * sizeof(TaxonAgg));
   }
   vec->items[vec->len++] = item;
+}
+
+static int get_requested_thread_count(void) {
+  const char *value = getenv("ORTHOMCLX_THREADS");
+  if (!value || !*value) return 1;
+  {
+    int threads = atoi(value);
+    return threads > 0 ? threads : 1;
+  }
 }
 
 static int cmp_name_index(const void *left, const void *right) {
@@ -439,6 +451,97 @@ static bool *load_ortholog_id_mask(const char *orthologs_path, NameIndexVec *pro
 
 static EdgeVec build_inparalog_edges(GroupVec *groups, RefVec *by_query_subject, StringVec *proteins, bool *ortholog_mask, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp, uint32_t shard_index, uint32_t shard_count) {
   EdgeVec edges = {0};
+#ifdef _OPENMP
+  int requested_threads = get_requested_thread_count();
+  if (requested_threads > 1) {
+    omp_set_num_threads(requested_threads);
+  }
+  {
+    int thread_count = omp_get_max_threads();
+    if (thread_count < 1) thread_count = 1;
+    fprintf(stderr, "[indexed_inparalogs] using OpenMP threads=%d\n", thread_count);
+    EdgeVec *thread_edges = (EdgeVec *)calloc((size_t)thread_count, sizeof(EdgeVec));
+    if (!thread_edges) die("Out of memory");
+    uint64_t processed_records = 0;
+
+#pragma omp parallel
+    {
+      int thread_id = omp_get_thread_num();
+      EdgeVec *local_edges = &thread_edges[thread_id];
+
+#pragma omp for schedule(dynamic, 2048)
+      for (size_t i = 0; i < g_records.len; i++) {
+        SimilarityRecordBin *left = &g_records.items[i];
+        if (shard_count > 1 && (left->query_id % shard_count) != shard_index) continue;
+        {
+          uint64_t current_records = 0;
+#pragma omp atomic capture
+          current_records = ++processed_records;
+          if (current_records % 1000000ULL == 0) {
+#pragma omp critical
+            fprintf(stderr, "[indexed_inparalogs] threads=%d processed %llu/%zu similarity records, %zu inparalogs in thread %d so far\n",
+                    thread_count,
+                    (unsigned long long)current_records,
+                    g_records.len,
+                    local_edges->len,
+                    thread_id);
+          }
+        }
+        {
+          QueryGroup *left_group = find_query_group(groups, left->query_id);
+          if (!keep_intra_record(left, left_group, percent_match_cutoff, cutoff_mant, cutoff_exp)) continue;
+          if (strcmp(proteins->items[left->query_id], proteins->items[left->subject_id]) >= 0) continue;
+
+          SimilarityRecordBin *right = find_record_by_query_subject(by_query_subject, left->subject_id, left->query_id);
+          if (!right) continue;
+          {
+            QueryGroup *right_group = find_query_group(groups, right->query_id);
+            if (!keep_intra_record(right, right_group, percent_match_cutoff, cutoff_mant, cutoff_exp)) continue;
+          }
+
+          {
+            InparalogEdge edge;
+            if (strcmp(proteins->items[left->query_id], proteins->items[left->subject_id]) < 0) {
+              edge.seq_a = left->query_id;
+              edge.seq_b = left->subject_id;
+            } else {
+              edge.seq_a = left->subject_id;
+              edge.seq_b = left->query_id;
+            }
+            edge.taxon_id = left->query_taxon_id;
+            edge.unnormalized_score = score_from_records(left, right, 0.01);
+            edge.normalized_score = 0.0;
+            push_edge(local_edges, edge);
+          }
+        }
+      }
+    }
+
+    {
+      size_t total_edges = 0;
+      int i = 0;
+      size_t offset = 0;
+      for (i = 0; i < thread_count; i++) {
+        total_edges += thread_edges[i].len;
+      }
+      edges.items = (InparalogEdge *)xmalloc((total_edges ? total_edges : 1) * sizeof(InparalogEdge));
+      edges.len = total_edges;
+      edges.cap = total_edges;
+      for (i = 0; i < thread_count; i++) {
+        if (thread_edges[i].len) {
+          memcpy(edges.items + offset, thread_edges[i].items, thread_edges[i].len * sizeof(InparalogEdge));
+          offset += thread_edges[i].len;
+        }
+        free(thread_edges[i].items);
+      }
+      free(thread_edges);
+    }
+  }
+#else
+  if (get_requested_thread_count() > 1) {
+    fprintf(stderr, "[indexed_inparalogs] requested %d threads, but this binary was built without OpenMP; falling back to single-threaded execution\n",
+            get_requested_thread_count());
+  }
   for (size_t i = 0; i < g_records.len; i++) {
     SimilarityRecordBin *left = &g_records.items[i];
     if (shard_count > 1 && (left->query_id % shard_count) != shard_index) continue;
@@ -468,6 +571,7 @@ static EdgeVec build_inparalog_edges(GroupVec *groups, RefVec *by_query_subject,
     edge.normalized_score = 0.0;
     push_edge(&edges, edge);
   }
+#endif
 
   TaxonAggVec aggs = {0};
   for (size_t i = 0; i < edges.len; i++) {

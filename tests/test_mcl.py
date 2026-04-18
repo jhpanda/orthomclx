@@ -81,7 +81,7 @@ class MclTest(unittest.TestCase):
                     out_dir=out_dir,
                     percent_match_cutoff=50.0,
                     evalue_exp_cutoff=-5,
-                    jobs=1,
+                    threads=1,
                     run_mcl=True,
                     mcl_binary=str(fake_mcl),
                     mcl_inflation=1.5,

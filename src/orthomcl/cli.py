@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 from orthomcl.compile_similarities import compile_similarities
+from orthomcl.evalue import parse_evalue_cutoff
 from orthomcl.fasta import adjust_fasta, filter_fasta_dir
 from orthomcl.groups import mcl_to_groups_file
 from orthomcl.indexed_pairs import run_indexed_pairs
@@ -47,11 +49,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Integrated mode: maximum allowed e-value, for example 1e-3 or 0.05",
     )
     parser.add_argument(
-        "--jobs",
-        dest="integrated_jobs",
+        "--threads",
+        dest="integrated_threads",
         type=int,
         default=1,
-        help="Integrated mode: number of parallel shard workers to use",
+        help="Integrated mode: number of worker threads to use; values > 1 enable the threaded path where available",
     )
     parser.add_argument(
         "--run-mcl",
@@ -263,10 +265,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Starting numeric suffix for groups.txt generation",
     )
     run_parser.add_argument(
-        "--jobs",
+        "--threads",
         type=int,
         default=1,
-        help="Number of parallel shard workers to use per indexed stage",
+        help="Number of worker threads to use; values > 1 enable the threaded path where available",
     )
 
     compile_parser = subparsers.add_parser(
@@ -305,6 +307,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         required=True,
         help="Maximum allowed e-value, for example 1e-3 or 0.05",
+    )
+    indexed_orthologs.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="Number of worker threads to use; values > 1 enable OpenMP when available",
     )
 
     indexed_inparalogs = subparsers.add_parser(
@@ -370,10 +378,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum allowed e-value, for example 1e-3 or 0.05",
     )
     indexed_pairs.add_argument(
-        "--jobs",
+        "--threads",
         type=int,
         default=1,
-        help="Number of parallel shard workers to use per indexed stage",
+        help="Number of worker threads to use; values > 1 enable the threaded path where available",
     )
     return parser
 
@@ -418,7 +426,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 out_dir=out_dir,
                 percent_match_cutoff=args.integrated_percent_match_cutoff,
                 evalue_exp_cutoff=args.integrated_evalue_exp_cutoff,
-                jobs=args.integrated_jobs,
+                threads=args.integrated_threads,
                 run_mcl=args.integrated_run_mcl,
                 mcl_output=Path(args.integrated_mcl_output) if args.integrated_mcl_output else None,
                 mcl_binary=args.integrated_mcl_binary,
@@ -508,7 +516,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 mcl_threads=args.mcl_threads,
                 groups_prefix=args.groups_prefix,
                 start_group_id=args.start_group_id,
-                jobs=args.jobs,
+                threads=args.threads,
             )
         )
         return 0
@@ -548,6 +556,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_path = Path(args.out_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         import subprocess
+        cutoff_mant, cutoff_exp = parse_evalue_cutoff(args.evalue_exp_cutoff)
+        env = dict(os.environ)
+        env["ORTHOMCLX_THREADS"] = str(max(1, args.threads))
 
         subprocess.run(
             [
@@ -557,8 +568,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 str(compiled_dir / "taxa.tsv"),
                 str(output_path),
                 str(args.percent_match_cutoff),
-                str(args.evalue_exp_cutoff),
+                str(cutoff_mant),
+                str(cutoff_exp),
             ],
+            env=env,
             check=True,
         )
         sys.stdout.write(f"indexed ortholog outputs written to {output_path}\n")
@@ -575,6 +588,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_path = Path(args.out_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         import subprocess
+        cutoff_mant, cutoff_exp = parse_evalue_cutoff(args.evalue_exp_cutoff)
 
         subprocess.run(
             [
@@ -585,7 +599,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 str(args.orthologs_file),
                 str(output_path),
                 str(args.percent_match_cutoff),
-                str(args.evalue_exp_cutoff),
+                str(cutoff_mant),
+                str(cutoff_exp),
             ],
             check=True,
         )
@@ -603,6 +618,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         output_path = Path(args.out_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         import subprocess
+        cutoff_mant, cutoff_exp = parse_evalue_cutoff(args.evalue_exp_cutoff)
 
         subprocess.run(
             [
@@ -614,7 +630,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 str(args.inparalogs_file),
                 str(output_path),
                 str(args.percent_match_cutoff),
-                str(args.evalue_exp_cutoff),
+                str(cutoff_mant),
+                str(cutoff_exp),
             ],
             check=True,
         )
@@ -627,7 +644,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.out_dir,
             args.percent_match_cutoff,
             args.evalue_exp_cutoff,
-            jobs=args.jobs,
+            threads=args.threads,
         )
         sys.stdout.write(
             f"indexed pairs complete: orthologs={summary.ortholog_count}, "

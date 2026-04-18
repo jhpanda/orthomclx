@@ -54,7 +54,7 @@ class IndexedRbhTest(unittest.TestCase):
             out_dir = tmp_path / "pairs"
             compile_similarities(fixture, compiled_dir)
 
-            summary = run_indexed_pairs(compiled_dir, out_dir, 50.0, -5, jobs=1)
+            summary = run_indexed_pairs(compiled_dir, out_dir, 50.0, -5, threads=1)
 
             self.assertEqual(summary.rbh_count, 2)
             self.assertEqual(
@@ -72,8 +72,8 @@ class IndexedRbhTest(unittest.TestCase):
             parallel_dir = tmp_path / "pairs_parallel"
             compile_similarities(fixture, compiled_dir)
 
-            single = run_indexed_pairs(compiled_dir, single_dir, 50.0, -5, jobs=1)
-            parallel = run_indexed_pairs(compiled_dir, parallel_dir, 50.0, -5, jobs=2)
+            single = run_indexed_pairs(compiled_dir, single_dir, 50.0, -5, threads=1)
+            parallel = run_indexed_pairs(compiled_dir, parallel_dir, 50.0, -5, threads=2)
 
             self.assertEqual(single.rbh_count, parallel.rbh_count)
             self.assertEqual(

@@ -1,6 +1,7 @@
 PYTHON ?= python3
 CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra
+OPENMP_CFLAGS ?=
 MCL_CFLAGS ?= -g -O2 -D_THREAD_SAFE -fcommon
 
 .PHONY: all clean test build-cli build-c-engine build-parse-blast-compiled build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
@@ -16,37 +17,37 @@ build-cli: build/orthomclx
 
 build/pairs_engine: src/c/pairs_engine.c
 	mkdir -p build
-	$(CC) $(CFLAGS) $< -lm -o $@
+	$(CC) $(CFLAGS) $(OPENMP_CFLAGS) $< -lm $(OPENMP_CFLAGS) -o $@
 
 build-c-engine: build/pairs_engine
 
 build/parse_blast_compiled: src/c/parse_blast_compiled.c
 	mkdir -p build
-	$(CC) $(CFLAGS) $< -lm -o $@
+	$(CC) $(CFLAGS) $(OPENMP_CFLAGS) $< -lm $(OPENMP_CFLAGS) -o $@
 
 build-parse-blast-compiled: build/parse_blast_compiled
 
 build/indexed_orthologs: src/c/indexed_orthologs.c
 	mkdir -p build
-	$(CC) $(CFLAGS) $< -lm -o $@
+	$(CC) $(CFLAGS) $(OPENMP_CFLAGS) $< -lm $(OPENMP_CFLAGS) -o $@
 
 build-indexed-orthologs: build/indexed_orthologs
 
 build/indexed_inparalogs: src/c/indexed_inparalogs.c
 	mkdir -p build
-	$(CC) $(CFLAGS) $< -lm -o $@
+	$(CC) $(CFLAGS) $(OPENMP_CFLAGS) $< -lm $(OPENMP_CFLAGS) -o $@
 
 build-indexed-inparalogs: build/indexed_inparalogs
 
 build/indexed_coorthologs: src/c/indexed_coorthologs.c
 	mkdir -p build
-	$(CC) $(CFLAGS) $< -lm -o $@
+	$(CC) $(CFLAGS) $(OPENMP_CFLAGS) $< -lm $(OPENMP_CFLAGS) -o $@
 
 build-indexed-coorthologs: build/indexed_coorthologs
 
 build/indexed_rbh: src/c/indexed_rbh.c
 	mkdir -p build
-	$(CC) $(CFLAGS) $< -lm -o $@
+	$(CC) $(CFLAGS) $(OPENMP_CFLAGS) $< -lm $(OPENMP_CFLAGS) -o $@
 
 build-indexed-rbh: build/indexed_rbh
 

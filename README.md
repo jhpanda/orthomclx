@@ -103,7 +103,7 @@ orthomclx --input compliantFasta \
   --out run_dir \
   --pcut 30 \
   --ecut 1e-3 \
-  --jobs 2 \
+  --threads 2 \
   --run-mcl
 ```
 
@@ -120,7 +120,9 @@ optionally runs `mcl`, and writes:
 - `run_dir/groups.txt` when `--run-mcl` or `--mcl-output` is used
 
 Long-running stages print progress messages so large BLAST and pair-building
-runs are easier to monitor.
+runs are easier to monitor. If `--threads` is omitted or set to `1`, the run is
+single-worker. If `--threads` is greater than `1`, ortholog and RBH use the
+threaded path where available.
 
 There are two ways to include the MCL step:
 
@@ -151,7 +153,7 @@ PYTHONPATH=src python3 -m orthomcl.cli parse-blast-compiled blast.tsv compliantF
 PYTHONPATH=src python3 -m orthomcl.cli indexed-pairs compiled_dir out_dir \
   --percent-match-cutoff 30 \
   --evalue-cutoff 1e-3 \
-  --jobs 2
+  --threads 2
 ```
 
 This writes:

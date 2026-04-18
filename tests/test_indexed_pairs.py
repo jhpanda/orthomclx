@@ -25,7 +25,7 @@ class IndexedPairsTest(unittest.TestCase):
             out_dir = tmp_path / "indexed_pairs"
             compile_similarities(fixture_dir / "similarSequences.txt", compiled_dir)
 
-            summary = run_indexed_pairs(compiled_dir, out_dir, 50.0, -5, jobs=1)
+            summary = run_indexed_pairs(compiled_dir, out_dir, 50.0, -5, threads=1)
 
             self.assertEqual(summary.ortholog_count, 2)
             self.assertEqual(summary.inparalog_count, 2)
@@ -57,8 +57,8 @@ class IndexedPairsTest(unittest.TestCase):
             multi_out = tmp_path / "multi"
             compile_similarities(fixture_dir / "similarSequences.txt", compiled_dir)
 
-            run_indexed_pairs(compiled_dir, single_out, 50.0, -5, jobs=1)
-            run_indexed_pairs(compiled_dir, multi_out, 50.0, -5, jobs=2)
+            run_indexed_pairs(compiled_dir, single_out, 50.0, -5, threads=1)
+            run_indexed_pairs(compiled_dir, multi_out, 50.0, -5, threads=2)
 
             self.assertEqual(
                 (single_out / "pairs" / "orthologs.txt").read_text(),

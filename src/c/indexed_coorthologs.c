@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 typedef struct {
   uint32_t query_id;
@@ -184,6 +187,15 @@ static void push_taxon_pair_agg(TaxonPairAggVec *vec, TaxonPairAgg item) {
   vec->items[vec->len++] = item;
 }
 
+static int get_requested_thread_count(void) {
+  const char *value = getenv("ORTHOMCLX_THREADS");
+  if (!value || !*value) return 1;
+  {
+    int threads = atoi(value);
+    return threads > 0 ? threads : 1;
+  }
+}
+
 static void push_uint(UIntVec *vec, uint32_t value) {
   if (vec->len == vec->cap) {
     vec->cap = vec->cap ? vec->cap * 2 : 8;
@@ -271,6 +283,23 @@ static int cmp_edge_output(const void *left, const void *right) {
   if (a->seq_a != b->seq_a) return a->seq_a < b->seq_a ? -1 : 1;
   if (a->seq_b != b->seq_b) return a->seq_b < b->seq_b ? -1 : 1;
   return 0;
+}
+
+static void dedupe_sorted_edges(EdgeVec *edges) {
+  if (edges->len == 0) return;
+  size_t out = 1;
+  for (size_t i = 1; i < edges->len; i++) {
+    CoorthologEdge *prev = &edges->items[out - 1];
+    CoorthologEdge *cur = &edges->items[i];
+    if (prev->seq_a == cur->seq_a &&
+        prev->seq_b == cur->seq_b &&
+        prev->taxon_a == cur->taxon_a &&
+        prev->taxon_b == cur->taxon_b) {
+      continue;
+    }
+    edges->items[out++] = *cur;
+  }
+  edges->len = out;
 }
 
 static RecordVec read_binary_records(const char *path) {
@@ -511,6 +540,126 @@ static EdgeVec build_coortholog_edges(
     uint32_t shard_count
 ) {
   EdgeVec edges = {0};
+#ifdef _OPENMP
+  int requested_threads = get_requested_thread_count();
+  if (requested_threads > 1) {
+    omp_set_num_threads(requested_threads);
+  }
+  {
+    int thread_count = omp_get_max_threads();
+    if (thread_count < 1) thread_count = 1;
+    fprintf(stderr, "[indexed_coorthologs] using OpenMP threads=%d\n", thread_count);
+    EdgeVec *thread_edges = (EdgeVec *)calloc((size_t)thread_count, sizeof(EdgeVec));
+    PairSet *thread_seen = (PairSet *)calloc((size_t)thread_count, sizeof(PairSet));
+    uint64_t processed_sources = 0;
+    if (!thread_edges || !thread_seen) die("Out of memory");
+    for (int i = 0; i < thread_count; i++) {
+      pair_set_init(&thread_seen[i], 65536);
+    }
+
+#pragma omp parallel
+    {
+      int thread_id = omp_get_thread_num();
+      EdgeVec *local_edges = &thread_edges[thread_id];
+      PairSet *local_seen = &thread_seen[thread_id];
+      uint32_t *target_marks = (uint32_t *)calloc(in_graph->len, sizeof(uint32_t));
+      UIntVec target_nodes = {0};
+      uint32_t mark_generation = 1;
+      if (!target_marks) die("Out of memory");
+
+#pragma omp for schedule(dynamic, 256)
+      for (uint32_t source = 0; source < in_graph->len; source++) {
+        if (shard_count > 1 && (source % shard_count) != shard_index) continue;
+        {
+          uint64_t current_sources = 0;
+#pragma omp atomic capture
+          current_sources = ++processed_sources;
+          if (current_sources % 10000ULL == 0) {
+#pragma omp critical
+            fprintf(stderr, "[indexed_coorthologs] threads=%d processed %llu/%zu source proteins, %zu coorthologs in thread %d so far\n",
+                    thread_count,
+                    (unsigned long long)current_sources,
+                    in_graph->len,
+                    local_edges->len,
+                    thread_id);
+          }
+        }
+
+        {
+          UIntVec *in_neighbors = &in_graph->items[source];
+          UIntVec *orth_neighbors = NULL;
+          if (in_neighbors->len == 0) continue;
+          orth_neighbors = find_neighbors(orth_graph, source);
+          if (!orth_neighbors || orth_neighbors->len == 0) continue;
+
+          if (mark_generation == UINT32_MAX) {
+            memset(target_marks, 0, in_graph->len * sizeof(uint32_t));
+            mark_generation = 1;
+          }
+          target_nodes.len = 0;
+
+          for (size_t b = 0; b < orth_neighbors->len; b++) {
+            uint32_t orth_neighbor = orth_neighbors->items[b];
+            if (target_marks[orth_neighbor] != mark_generation) {
+              target_marks[orth_neighbor] = mark_generation;
+              push_uint(&target_nodes, orth_neighbor);
+            }
+            {
+              UIntVec *right_in = find_neighbors(in_graph, orth_neighbor);
+              if (!right_in || right_in->len == 0) continue;
+              for (size_t c = 0; c < right_in->len; c++) {
+                uint32_t candidate = right_in->items[c];
+                if (target_marks[candidate] != mark_generation) {
+                  target_marks[candidate] = mark_generation;
+                  push_uint(&target_nodes, candidate);
+                }
+              }
+            }
+          }
+          mark_generation += 1;
+
+          for (size_t a = 0; a < in_neighbors->len; a++) {
+            for (size_t t = 0; t < target_nodes.len; t++) {
+              maybe_add_coortholog(
+                  local_edges, local_seen, orth_graph, by_query_subject, proteins,
+                  in_neighbors->items[a], target_nodes.items[t],
+                  percent_match_cutoff, cutoff_mant, cutoff_exp);
+            }
+          }
+        }
+      }
+
+      free(target_marks);
+      free(target_nodes.items);
+    }
+
+    {
+      size_t total_edges = 0;
+      size_t offset = 0;
+      int i = 0;
+      for (i = 0; i < thread_count; i++) {
+        total_edges += thread_edges[i].len;
+      }
+      edges.items = (CoorthologEdge *)xmalloc((total_edges ? total_edges : 1) * sizeof(CoorthologEdge));
+      edges.len = total_edges;
+      edges.cap = total_edges;
+      for (i = 0; i < thread_count; i++) {
+        if (thread_edges[i].len) {
+          memcpy(edges.items + offset, thread_edges[i].items, thread_edges[i].len * sizeof(CoorthologEdge));
+          offset += thread_edges[i].len;
+        }
+        free(thread_edges[i].items);
+        free(thread_seen[i].items);
+      }
+      free(thread_edges);
+      free(thread_seen);
+    }
+  }
+#else
+  if (get_requested_thread_count() > 1) {
+    fprintf(stderr, "[indexed_coorthologs] requested %d threads, but this binary was built without OpenMP; falling back to single-threaded execution\n",
+            get_requested_thread_count());
+  }
   PairSet seen_pairs = {0};
   pair_set_init(&seen_pairs, 262144);
   uint32_t *target_marks = (uint32_t *)calloc(in_graph->len, sizeof(uint32_t));
@@ -565,22 +714,26 @@ static EdgeVec build_coortholog_edges(
     }
   }
 
-  TaxonPairAggVec aggs = {0};
-  for (size_t i = 0; i < edges.len; i++) {
-    TaxonPairAgg *agg = get_taxon_pair_agg(&aggs, edges.items[i].taxon_a, edges.items[i].taxon_b);
-    agg->sum += edges.items[i].unnormalized_score;
-    agg->count += 1;
-  }
-  for (size_t i = 0; i < edges.len; i++) {
-    TaxonPairAgg *agg = get_taxon_pair_agg(&aggs, edges.items[i].taxon_a, edges.items[i].taxon_b);
-    edges.items[i].normalized_score = edges.items[i].unnormalized_score / (agg->sum / (double)agg->count);
-  }
-  free(aggs.items);
   free(seen_pairs.items);
   free(target_marks);
   free(target_nodes.items);
+#endif
 
   qsort(edges.items, edges.len, sizeof(CoorthologEdge), cmp_edge_output);
+  dedupe_sorted_edges(&edges);
+  {
+    TaxonPairAggVec aggs = {0};
+    for (size_t i = 0; i < edges.len; i++) {
+      TaxonPairAgg *agg = get_taxon_pair_agg(&aggs, edges.items[i].taxon_a, edges.items[i].taxon_b);
+      agg->sum += edges.items[i].unnormalized_score;
+      agg->count += 1;
+    }
+    for (size_t i = 0; i < edges.len; i++) {
+      TaxonPairAgg *agg = get_taxon_pair_agg(&aggs, edges.items[i].taxon_a, edges.items[i].taxon_b);
+      edges.items[i].normalized_score = edges.items[i].unnormalized_score / (agg->sum / (double)agg->count);
+    }
+    free(aggs.items);
+  }
   return edges;
 }
 

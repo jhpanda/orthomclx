@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 typedef struct {
   uint32_t query_id;
@@ -160,6 +163,13 @@ static void push_taxon_pair_agg(TaxonPairAggVec *vec, TaxonPairAgg item) {
     vec->items = (TaxonPairAgg *)xrealloc(vec->items, vec->cap * sizeof(TaxonPairAgg));
   }
   vec->items[vec->len++] = item;
+}
+
+static int get_requested_thread_count(void) {
+  const char *value = getenv("ORTHOMCLX_THREADS");
+  if (!value || !*value) return 1;
+  int threads = atoi(value);
+  return threads > 0 ? threads : 1;
 }
 
 static int cmp_ref_query_taxon_best(const void *left, const void *right) {
@@ -365,6 +375,95 @@ static TaxonPairAgg *get_taxon_pair_agg(TaxonPairAggVec *aggs, uint32_t taxon_a,
 
 static EdgeVec build_ortholog_edges(GroupVec *groups, RefVec *by_query_taxon, RefVec *by_query_subject, StringVec *proteins, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp, uint32_t shard_index, uint32_t shard_count) {
   EdgeVec edges = {0};
+#ifdef _OPENMP
+  int requested_threads = get_requested_thread_count();
+  if (requested_threads > 1) {
+    omp_set_num_threads(requested_threads);
+  }
+  int thread_count = omp_get_max_threads();
+  if (thread_count < 1) thread_count = 1;
+  fprintf(stderr, "[indexed_orthologs] using OpenMP threads=%d\n", thread_count);
+  EdgeVec *thread_edges = (EdgeVec *)calloc((size_t)thread_count, sizeof(EdgeVec));
+  if (!thread_edges) die("Out of memory");
+  uint64_t processed_groups = 0;
+
+#pragma omp parallel
+  {
+    int thread_id = omp_get_thread_num();
+    EdgeVec *local_edges = &thread_edges[thread_id];
+
+#pragma omp for schedule(dynamic, 256)
+    for (size_t i = 0; i < groups->len; i++) {
+      QueryTaxonGroup *group = &groups->items[i];
+      if (shard_count > 1 && (group->query_id % shard_count) != shard_index) continue;
+      if (group->best_evalue_exp == INT32_MAX) continue;
+      uint64_t current_groups = 0;
+#pragma omp atomic capture
+      current_groups = ++processed_groups;
+      if (current_groups % 50000ULL == 0) {
+#pragma omp critical
+        fprintf(stderr, "[indexed_orthologs] threads=%d processed %llu/%zu query-taxon groups, %zu orthologs in thread %d so far\n",
+                thread_count,
+                (unsigned long long)current_groups,
+                groups->len,
+                local_edges->len,
+                thread_id);
+      }
+      for (uint32_t pos = group->start; pos < group->end; pos++) {
+        SimilarityRecordBin *left = &g_records.items[by_query_taxon->items[pos].record_index];
+        if (!passes_thresholds(left, percent_match_cutoff, cutoff_mant, cutoff_exp)) continue;
+        if (!qualifies_as_best_hit(left, group)) continue;
+        if (strcmp(proteins->items[left->query_id], proteins->items[left->subject_id]) >= 0) continue;
+
+        SimilarityRecordBin *right = find_record_by_query_subject(by_query_subject, left->subject_id, left->query_id);
+        if (!right) continue;
+        if (right->query_taxon_id == right->subject_taxon_id) continue;
+        if (!passes_thresholds(right, percent_match_cutoff, cutoff_mant, cutoff_exp)) continue;
+
+        QueryTaxonGroup *reverse_group = find_group(groups, right->query_id, right->subject_taxon_id);
+        if (!reverse_group) continue;
+        if (!qualifies_as_best_hit(right, reverse_group)) continue;
+
+        OrthologEdge edge;
+        if (strcmp(proteins->items[left->query_id], proteins->items[left->subject_id]) < 0) {
+          edge.seq_a = left->query_id;
+          edge.seq_b = left->subject_id;
+          edge.taxon_a = left->query_taxon_id;
+          edge.taxon_b = left->subject_taxon_id;
+        } else {
+          edge.seq_a = left->subject_id;
+          edge.seq_b = left->query_id;
+          edge.taxon_a = left->subject_taxon_id;
+          edge.taxon_b = left->query_taxon_id;
+        }
+        edge.unnormalized_score = score_from_records(left, right, 0.01);
+        edge.normalized_score = 0.0;
+        push_edge(local_edges, edge);
+      }
+    }
+  }
+
+  size_t total_edges = 0;
+  for (int i = 0; i < thread_count; i++) {
+    total_edges += thread_edges[i].len;
+  }
+  edges.items = (OrthologEdge *)xmalloc((total_edges ? total_edges : 1) * sizeof(OrthologEdge));
+  edges.len = total_edges;
+  edges.cap = total_edges;
+  size_t offset = 0;
+  for (int i = 0; i < thread_count; i++) {
+    if (thread_edges[i].len) {
+      memcpy(edges.items + offset, thread_edges[i].items, thread_edges[i].len * sizeof(OrthologEdge));
+      offset += thread_edges[i].len;
+    }
+    free(thread_edges[i].items);
+  }
+  free(thread_edges);
+#else
+  if (get_requested_thread_count() > 1) {
+    fprintf(stderr, "[indexed_orthologs] requested %d threads, but this binary was built without OpenMP; falling back to single-threaded execution\n",
+            get_requested_thread_count());
+  }
   for (size_t i = 0; i < groups->len; i++) {
     QueryTaxonGroup *group = &groups->items[i];
     if (shard_count > 1 && (group->query_id % shard_count) != shard_index) continue;
@@ -405,6 +504,7 @@ static EdgeVec build_ortholog_edges(GroupVec *groups, RefVec *by_query_taxon, Re
       push_edge(&edges, edge);
     }
   }
+#endif
 
   TaxonPairAggVec aggs = {0};
   for (size_t i = 0; i < edges.len; i++) {

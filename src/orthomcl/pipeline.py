@@ -18,7 +18,7 @@ class RunConfig:
     out_dir: Path
     percent_match_cutoff: float
     evalue_exp_cutoff: int
-    jobs: int = 1
+    threads: int = 1
     mcl_output: Optional[Path] = None
     run_mcl: bool = False
     mcl_binary: str = "mcl"
@@ -39,7 +39,7 @@ def run_pipeline(config: RunConfig) -> None:
         config.out_dir,
         config.percent_match_cutoff,
         config.evalue_exp_cutoff,
-        jobs=config.jobs,
+        threads=config.threads,
     )
 
     generated_mcl_output = config.out_dir / "mclOutput" if config.run_mcl else None
@@ -71,7 +71,7 @@ class IntegratedRunConfig:
     out_dir: Path
     percent_match_cutoff: float
     evalue_exp_cutoff: int
-    jobs: int = 1
+    threads: int = 1
     mcl_output: Optional[Path] = None
     run_mcl: bool = False
     mcl_binary: str = "mcl"
@@ -93,7 +93,7 @@ def run_integrated_pipeline(config: IntegratedRunConfig) -> IndexedPairsSummary:
         config.out_dir,
         config.percent_match_cutoff,
         config.evalue_exp_cutoff,
-        jobs=config.jobs,
+        threads=config.threads,
     )
 
     generated_mcl_output = config.out_dir / "mclOutput" if config.run_mcl else None
