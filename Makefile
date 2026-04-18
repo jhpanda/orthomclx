@@ -1,12 +1,17 @@
 PYTHON ?= python3
 CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+OPENMP_CFLAGS ?=
+else
 OPENMP_CFLAGS ?= -fopenmp
+endif
 MCL_CFLAGS ?= -g -O2 -D_THREAD_SAFE -fcommon
 
-.PHONY: all clean test build-cli build-c-engine build-parse-blast-compiled build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
+.PHONY: all clean test build-cli build-c-engine build-parse-blast-compiled build-similarity-indexes build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
 
-all: build/orthomclx build/pairs_engine build/parse_blast_compiled build/indexed_orthologs build/indexed_inparalogs build/indexed_coorthologs build/indexed_rbh build/mcl
+all: build/orthomclx build/pairs_engine build/parse_blast_compiled build/build_similarity_indexes build/indexed_orthologs build/indexed_inparalogs build/indexed_coorthologs build/indexed_rbh build/mcl
 
 build/orthomclx: src/orthomcl/cli.py
 	mkdir -p build
@@ -26,6 +31,12 @@ build/parse_blast_compiled: src/c/parse_blast_compiled.c
 	$(CC) $(CFLAGS) $(OPENMP_CFLAGS) $< -lm $(OPENMP_CFLAGS) -o $@
 
 build-parse-blast-compiled: build/parse_blast_compiled
+
+build/build_similarity_indexes: src/c/build_similarity_indexes.c
+	mkdir -p build
+	$(CC) $(CFLAGS) $(OPENMP_CFLAGS) $< -lm $(OPENMP_CFLAGS) -o $@
+
+build-similarity-indexes: build/build_similarity_indexes
 
 build/indexed_orthologs: src/c/indexed_orthologs.c
 	mkdir -p build

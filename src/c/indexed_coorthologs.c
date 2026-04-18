@@ -187,6 +187,48 @@ static void push_taxon_pair_agg(TaxonPairAggVec *vec, TaxonPairAgg item) {
   vec->items[vec->len++] = item;
 }
 
+static bool load_ref_file(const char *path, size_t expected_count, RefVec *refs) {
+  FILE *handle = fopen(path, "rb");
+  long size = 0;
+  if (!handle) return false;
+  if (fseek(handle, 0, SEEK_END) != 0) {
+    fclose(handle);
+    return false;
+  }
+  size = ftell(handle);
+  if (size < 0 || (size_t)size != expected_count * sizeof(RecordRef)) {
+    fclose(handle);
+    return false;
+  }
+  rewind(handle);
+  refs->len = expected_count;
+  refs->cap = expected_count;
+  refs->items = (RecordRef *)xmalloc((expected_count ? expected_count : 1) * sizeof(RecordRef));
+  if (expected_count && fread(refs->items, sizeof(RecordRef), expected_count, handle) != expected_count) {
+    fclose(handle);
+    free(refs->items);
+    refs->items = NULL;
+    refs->len = 0;
+    refs->cap = 0;
+    return false;
+  }
+  fclose(handle);
+  return true;
+}
+
+static void build_compiled_path(char *out, size_t out_size, const char *binary_path, const char *name) {
+  const char *slash = strrchr(binary_path, '/');
+  if (!slash) {
+    if (snprintf(out, out_size, "%s", name) >= (int)out_size) {
+      die("Compiled path too long");
+    }
+    return;
+  }
+  if (snprintf(out, out_size, "%.*s/%s", (int)(slash - binary_path), binary_path, name) >= (int)out_size) {
+    die("Compiled path too long");
+  }
+}
+
 static int get_requested_thread_count(void) {
   const char *value = getenv("ORTHOMCLX_THREADS");
   if (!value || !*value) return 1;
@@ -194,6 +236,11 @@ static int get_requested_thread_count(void) {
     int threads = atoi(value);
     return threads > 0 ? threads : 1;
   }
+}
+
+static bool raw_only_mode(void) {
+  const char *value = getenv("ORTHOMCLX_RAW_ONLY");
+  return value && strcmp(value, "0") != 0;
 }
 
 static void push_uint(UIntVec *vec, uint32_t value) {
@@ -385,6 +432,18 @@ static RefVec build_sorted_refs(size_t record_count) {
   return refs;
 }
 
+static RefVec load_or_build_refs(const char *binary_path, size_t record_count) {
+  char path[4096];
+  RefVec refs = {0};
+  build_compiled_path(path, sizeof(path), binary_path, "refs.query_subject.bin");
+  if (load_ref_file(path, record_count, &refs)) {
+    fprintf(stderr, "[indexed_coorthologs] loaded prebuilt refs: refs.query_subject.bin\n");
+    return refs;
+  }
+  fprintf(stderr, "[indexed_coorthologs] building refs in-process: refs.query_subject.bin\n");
+  return build_sorted_refs(record_count);
+}
+
 static SimilarityRecordBin *find_record(RefVec *refs, uint32_t query_id, uint32_t subject_id) {
   size_t left = 0;
   size_t right = refs->len;
@@ -528,6 +587,14 @@ static TaxonPairAgg *get_taxon_pair_agg(TaxonPairAggVec *aggs, uint32_t taxon_a,
   return &aggs->items[aggs->len - 1];
 }
 
+#ifdef _OPENMP
+static size_t taxon_pair_index(uint32_t taxon_a, uint32_t taxon_b, size_t taxon_count) {
+  uint32_t first = taxon_a < taxon_b ? taxon_a : taxon_b;
+  uint32_t second = taxon_a < taxon_b ? taxon_b : taxon_a;
+  return (size_t)first * taxon_count + (size_t)second;
+}
+#endif
+
 static EdgeVec build_coortholog_edges(
     NeighborGraph *orth_graph,
     NeighborGraph *in_graph,
@@ -537,7 +604,8 @@ static EdgeVec build_coortholog_edges(
     float cutoff_mant,
     int32_t cutoff_exp,
     uint32_t shard_index,
-    uint32_t shard_count
+    uint32_t shard_count,
+    bool raw_only
 ) {
   EdgeVec edges = {0};
 #ifdef _OPENMP
@@ -719,20 +787,72 @@ static EdgeVec build_coortholog_edges(
   free(target_nodes.items);
 #endif
 
-  qsort(edges.items, edges.len, sizeof(CoorthologEdge), cmp_edge_output);
-  dedupe_sorted_edges(&edges);
-  {
-    TaxonPairAggVec aggs = {0};
+  if (!raw_only) {
+    qsort(edges.items, edges.len, sizeof(CoorthologEdge), cmp_edge_output);
+    dedupe_sorted_edges(&edges);
+    uint32_t max_taxon = 0;
     for (size_t i = 0; i < edges.len; i++) {
-      TaxonPairAgg *agg = get_taxon_pair_agg(&aggs, edges.items[i].taxon_a, edges.items[i].taxon_b);
-      agg->sum += edges.items[i].unnormalized_score;
-      agg->count += 1;
+      if (edges.items[i].taxon_a > max_taxon) max_taxon = edges.items[i].taxon_a;
+      if (edges.items[i].taxon_b > max_taxon) max_taxon = edges.items[i].taxon_b;
     }
-    for (size_t i = 0; i < edges.len; i++) {
-      TaxonPairAgg *agg = get_taxon_pair_agg(&aggs, edges.items[i].taxon_a, edges.items[i].taxon_b);
-      edges.items[i].normalized_score = edges.items[i].unnormalized_score / (agg->sum / (double)agg->count);
+#ifdef _OPENMP
+    int requested_threads = get_requested_thread_count();
+    if (requested_threads > 1 && edges.len > 0) {
+      omp_set_num_threads(requested_threads);
+      {
+        int thread_count = omp_get_max_threads();
+        size_t taxon_count = (size_t)max_taxon + 1;
+        size_t pair_count = taxon_count * taxon_count;
+        double *local_sums = (double *)calloc((size_t)thread_count * pair_count, sizeof(double));
+        uint64_t *local_counts = (uint64_t *)calloc((size_t)thread_count * pair_count, sizeof(uint64_t));
+        double *global_sums = (double *)calloc(pair_count, sizeof(double));
+        uint64_t *global_counts = (uint64_t *)calloc(pair_count, sizeof(uint64_t));
+        if (!local_sums || !local_counts || !global_sums || !global_counts) die("Out of memory");
+#pragma omp parallel
+        {
+          int thread_id = omp_get_thread_num();
+          double *thread_sums = local_sums + ((size_t)thread_id * pair_count);
+          uint64_t *thread_counts = local_counts + ((size_t)thread_id * pair_count);
+#pragma omp for schedule(static)
+          for (size_t i = 0; i < edges.len; i++) {
+            size_t idx = taxon_pair_index(edges.items[i].taxon_a, edges.items[i].taxon_b, taxon_count);
+            thread_sums[idx] += edges.items[i].unnormalized_score;
+            thread_counts[idx] += 1;
+          }
+        }
+        for (int thread_id = 0; thread_id < thread_count; thread_id++) {
+          double *thread_sums = local_sums + ((size_t)thread_id * pair_count);
+          uint64_t *thread_counts = local_counts + ((size_t)thread_id * pair_count);
+          for (size_t idx = 0; idx < pair_count; idx++) {
+            global_sums[idx] += thread_sums[idx];
+            global_counts[idx] += thread_counts[idx];
+          }
+        }
+#pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < edges.len; i++) {
+          size_t idx = taxon_pair_index(edges.items[i].taxon_a, edges.items[i].taxon_b, taxon_count);
+          edges.items[i].normalized_score = edges.items[i].unnormalized_score / (global_sums[idx] / (double)global_counts[idx]);
+        }
+        free(local_sums);
+        free(local_counts);
+        free(global_sums);
+        free(global_counts);
+      }
+    } else
+#endif
+    {
+      TaxonPairAggVec aggs = {0};
+      for (size_t i = 0; i < edges.len; i++) {
+        TaxonPairAgg *agg = get_taxon_pair_agg(&aggs, edges.items[i].taxon_a, edges.items[i].taxon_b);
+        agg->sum += edges.items[i].unnormalized_score;
+        agg->count += 1;
+      }
+      for (size_t i = 0; i < edges.len; i++) {
+        TaxonPairAgg *agg = get_taxon_pair_agg(&aggs, edges.items[i].taxon_a, edges.items[i].taxon_b);
+        edges.items[i].normalized_score = edges.items[i].unnormalized_score / (agg->sum / (double)agg->count);
+      }
+      free(aggs.items);
     }
-    free(aggs.items);
   }
   return edges;
 }
@@ -825,12 +945,13 @@ int main(int argc, char **argv) {
   StringVec proteins = read_index_values(proteins_path);
   StringVec taxa = read_index_values(taxa_path);
   NameIndexVec protein_map = build_name_index(&proteins);
-  RefVec by_query_subject = build_sorted_refs(g_records.len);
+  RefVec by_query_subject = load_or_build_refs(binary_path, g_records.len);
   NeighborGraph orth_graph = init_neighbor_graph(proteins.len);
   NeighborGraph in_graph = init_neighbor_graph(proteins.len);
   load_pair_graph(orthologs_path, &protein_map, &orth_graph);
   load_pair_graph(inparalogs_path, &protein_map, &in_graph);
-  EdgeVec edges = build_coortholog_edges(&orth_graph, &in_graph, &by_query_subject, &proteins, percent_match_cutoff, cutoff_mant, cutoff_exp, shard_index, shard_count);
+  bool raw_only = raw_only_mode();
+  EdgeVec edges = build_coortholog_edges(&orth_graph, &in_graph, &by_query_subject, &proteins, percent_match_cutoff, cutoff_mant, cutoff_exp, shard_index, shard_count, raw_only);
 
   make_dir(out_dir);
   char out_path[4096];
@@ -839,8 +960,10 @@ int main(int argc, char **argv) {
   snprintf(out_path, sizeof(out_path), "%s/coorthologs.indexed.txt", out_dir);
   snprintf(raw_path, sizeof(raw_path), "%s/coorthologs.indexed.raw.tsv", out_dir);
   snprintf(summary_path, sizeof(summary_path), "%s/coorthologs.indexed.summary.tsv", out_dir);
-  write_coorthologs(out_path, &edges, &proteins);
   write_coorthologs_raw(raw_path, &edges, &proteins, &taxa);
+  if (!raw_only) {
+    write_coorthologs(out_path, &edges, &proteins);
+  }
   FILE *summary = fopen(summary_path, "w");
   if (!summary) die("Could not open summary output");
   write_summary(summary, g_records.len, orth_graph.len, in_graph.len, edges.len, proteins.len, taxa.len);

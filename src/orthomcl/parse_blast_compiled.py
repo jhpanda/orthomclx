@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Union
 
 from orthomcl.compile_similarities import CompiledSimilaritySummary, RECORD_STRUCT
+from orthomcl.similarity_indexes import build_similarity_indexes
 
 
 def ensure_c_blast_compiler_built() -> Path:
@@ -27,6 +28,7 @@ def parse_blast_to_compiled(
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"[orthomclx] parsing BLAST to compiled binary: {blast_path}")
     subprocess.run([str(binary), str(blast_path), str(fasta_dir), str(out_dir)], check=True)
+    build_similarity_indexes(out_dir, required=True)
 
     binary_path = out_dir / "similarities.bin"
     proteins_path = out_dir / "proteins.tsv"

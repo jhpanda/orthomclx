@@ -191,6 +191,7 @@ def run_threaded_ortholog_stage(
     )
     env = dict(os.environ)
     env["ORTHOMCLX_THREADS"] = str(max(1, threads))
+    env["ORTHOMCLX_RAW_ONLY"] = "1"
     subprocess.run(cmd, check=True, env=env)
     return out_dir / "orthologs.indexed.raw.tsv"
 
@@ -240,6 +241,7 @@ def run_threaded_inparalog_stage(
     )
     env = dict(os.environ)
     env["ORTHOMCLX_THREADS"] = str(max(1, threads))
+    env["ORTHOMCLX_RAW_ONLY"] = "1"
     subprocess.run(cmd, check=True, env=env)
     return out_dir / "inparalogs.indexed.raw.tsv"
 
@@ -264,6 +266,7 @@ def run_threaded_coortholog_stage(
     )
     env = dict(os.environ)
     env["ORTHOMCLX_THREADS"] = str(max(1, threads))
+    env["ORTHOMCLX_RAW_ONLY"] = "1"
     subprocess.run(cmd, check=True, env=env)
     return out_dir / "coorthologs.indexed.raw.tsv"
 
@@ -330,6 +333,15 @@ def read_raw_inparalogs(path: Path) -> list[RawInparalog]:
 
 
 def normalize_raw_orthologs(rows: list[RawOrtholog], edge_type: str) -> list[EdgeRecord]:
+    deduped: dict[tuple[str, str, str, str], RawOrtholog] = {}
+    for row in rows:
+        key = (row.seq_a, row.seq_b, row.taxon_a, row.taxon_b)
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = row
+        elif abs(existing.unnormalized_score - row.unnormalized_score) > 1e-9:
+            raise ValueError(f"Conflicting raw scores for {key}: {existing.unnormalized_score} vs {row.unnormalized_score}")
+    rows = list(deduped.values())
     sums: dict[tuple[str, str], list[float]] = {}
     for row in rows:
         key = tuple(sorted((row.taxon_a, row.taxon_b)))
@@ -351,6 +363,15 @@ def normalize_raw_orthologs(rows: list[RawOrtholog], edge_type: str) -> list[Edg
 
 
 def normalize_raw_inparalogs(rows: list[RawInparalog], ortholog_ids: set[str]) -> list[EdgeRecord]:
+    deduped: dict[tuple[str, str, str], RawInparalog] = {}
+    for row in rows:
+        key = (row.seq_a, row.seq_b, row.taxon_id)
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = row
+        elif abs(existing.unnormalized_score - row.unnormalized_score) > 1e-9:
+            raise ValueError(f"Conflicting raw scores for {key}: {existing.unnormalized_score} vs {row.unnormalized_score}")
+    rows = list(deduped.values())
     all_scores: dict[str, list[float]] = {}
     orth_scores: dict[str, list[float]] = {}
     for row in rows:

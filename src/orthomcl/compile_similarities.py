@@ -7,6 +7,7 @@ from typing import Dict, Union
 from orthomcl.compat import dataclass
 
 from orthomcl.io import ensure_directory, read_similarity_records
+from orthomcl.similarity_indexes import build_similarity_indexes
 
 
 RECORD_STRUCT = struct.Struct("<IIIIfiff")
@@ -72,6 +73,7 @@ def compile_similarities(
 
     write_index_file(proteins_path, protein_index)
     write_index_file(taxa_path, taxon_index)
+    build_similarity_indexes(output_dir)
 
     return CompiledSimilaritySummary(
         record_count=len(records),

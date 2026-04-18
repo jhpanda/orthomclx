@@ -134,6 +134,48 @@ static void push_best_hit(BestHitVec *vec, BestHitGroup item) {
   vec->items[vec->len++] = item;
 }
 
+static bool load_ref_file(const char *path, size_t expected_count, RefVec *refs) {
+  FILE *handle = fopen(path, "rb");
+  long size = 0;
+  if (!handle) return false;
+  if (fseek(handle, 0, SEEK_END) != 0) {
+    fclose(handle);
+    return false;
+  }
+  size = ftell(handle);
+  if (size < 0 || (size_t)size != expected_count * sizeof(RecordRef)) {
+    fclose(handle);
+    return false;
+  }
+  rewind(handle);
+  refs->len = expected_count;
+  refs->cap = expected_count;
+  refs->items = (RecordRef *)xmalloc((expected_count ? expected_count : 1) * sizeof(RecordRef));
+  if (expected_count && fread(refs->items, sizeof(RecordRef), expected_count, handle) != expected_count) {
+    fclose(handle);
+    free(refs->items);
+    refs->items = NULL;
+    refs->len = 0;
+    refs->cap = 0;
+    return false;
+  }
+  fclose(handle);
+  return true;
+}
+
+static void build_compiled_path(char *out, size_t out_size, const char *binary_path, const char *name) {
+  const char *slash = strrchr(binary_path, '/');
+  if (!slash) {
+    if (snprintf(out, out_size, "%s", name) >= (int)out_size) {
+      die("Compiled path too long");
+    }
+    return;
+  }
+  if (snprintf(out, out_size, "%.*s/%s", (int)(slash - binary_path), binary_path, name) >= (int)out_size) {
+    die("Compiled path too long");
+  }
+}
+
 #ifdef _OPENMP
 static void push_group_range(GroupRangeVec *vec, GroupRange item) {
   if (vec->len == vec->cap) {
@@ -226,6 +268,18 @@ static RefVec build_sorted_refs(size_t record_count) {
   for (size_t i = 0; i < record_count; i++) refs.items[i].record_index = (uint32_t)i;
   qsort(refs.items, refs.len, sizeof(RecordRef), cmp_ref_query_taxon_best);
   return refs;
+}
+
+static RefVec load_or_build_refs(const char *binary_path, size_t record_count) {
+  char path[4096];
+  RefVec refs = {0};
+  build_compiled_path(path, sizeof(path), binary_path, "refs.query_taxon_best.bin");
+  if (load_ref_file(path, record_count, &refs)) {
+    fprintf(stderr, "[indexed_rbh] loaded prebuilt refs: refs.query_taxon_best.bin\n");
+    return refs;
+  }
+  fprintf(stderr, "[indexed_rbh] building refs in-process: refs.query_taxon_best.bin\n");
+  return build_sorted_refs(record_count);
 }
 
 static bool passes_evalue_cutoff(const SimilarityRecordBin *record, float cutoff_mant, int32_t cutoff_exp) {
@@ -489,7 +543,7 @@ int main(int argc, char **argv) {
   g_records = read_binary_records(binary_path);
   StringVec proteins = read_index_values(proteins_path);
   StringVec taxa = read_index_values(taxa_path);
-  RefVec refs = build_sorted_refs(g_records.len);
+  RefVec refs = load_or_build_refs(binary_path, g_records.len);
   BestHitVec best_hits = build_best_hits(&refs, percent_match_cutoff, cutoff_mant, cutoff_exp);
 
   make_dir(out_dir);
