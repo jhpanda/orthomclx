@@ -1,7 +1,7 @@
 PYTHON ?= python3
 CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra
-OPENMP_CFLAGS ?=
+OPENMP_CFLAGS ?= -fopenmp
 MCL_CFLAGS ?= -g -O2 -D_THREAD_SAFE -fcommon
 
 .PHONY: all clean test build-cli build-c-engine build-parse-blast-compiled build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
