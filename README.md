@@ -44,6 +44,8 @@ External tools still expected:
 This repository currently vendors MCL version `14-137` under `src/mcl/`.
 Users are also welcome to download and use the latest upstream MCL release from
 [https://micans.org/mcl/](https://micans.org/mcl/).
+Because this repo vendors MCL, the repository includes a top-level GPLv3
+license file in [LICENSE](/Users/jpeng/Dropbox%20@RU%20Dropbox/Junhui%20Peng/MyDoc/Github/orthomcl_c/LICENSE).
 
 ## Why Python And C
 
@@ -52,7 +54,6 @@ Python is used for:
 - CLI and workflow orchestration
 - FASTA and BLAST parsing
 - output handling
-- tests and validation helpers
 
 C is used for:
 
@@ -68,7 +69,6 @@ src/
   c/          C source files
   mcl/        Vendored upstream MCL source (optional)
 scripts/      Useful wrapper scripts
-tests/        Automated tests and validation datasets
 ```
 
 ## Main CLI
@@ -204,14 +204,6 @@ Or build all current binaries:
 
 ```bash
 make
-```
-
-## Testing
-
-Run the test suite:
-
-```bash
-python3 -m unittest discover -s tests -v
 ```
 
 Useful helper wrappers:

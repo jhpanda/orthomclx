@@ -1,2 +1,5 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+src/mcl/** linguist-vendored
+
+# Keep generated build output and local metadata out of language stats if present.
+build/** linguist-generated
+*.DS_Store linguist-generated
