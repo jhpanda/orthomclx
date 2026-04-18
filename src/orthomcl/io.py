@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Union
 
 from orthomcl.models import EdgeRecord, SimilarityRecord
 
 
-def read_similarity_records(path: str | Path) -> list[SimilarityRecord]:
+def read_similarity_records(path: Union[str, Path]) -> list[SimilarityRecord]:
     records: list[SimilarityRecord] = []
     with Path(path).open() as handle:
         for line_number, raw_line in enumerate(handle, start=1):
@@ -34,7 +34,7 @@ def read_similarity_records(path: str | Path) -> list[SimilarityRecord]:
     return records
 
 
-def ensure_directory(path: str | Path) -> Path:
+def ensure_directory(path: Union[str, Path]) -> Path:
     directory = Path(path)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
@@ -52,19 +52,19 @@ def format_score(score: float) -> str:
     return f"{rounded:.3f}".rstrip("0").rstrip(".")
 
 
-def write_edge_file(path: str | Path, edges: Iterable[EdgeRecord]) -> None:
+def write_edge_file(path: Union[str, Path], edges: Iterable[EdgeRecord]) -> None:
     with Path(path).open("w") as handle:
         for edge in edges:
             handle.write(f"{edge.seq_a}\t{edge.seq_b}\t{format_score(edge.normalized_score)}\n")
 
 
-def write_mcl_input(path: str | Path, edges: Iterable[EdgeRecord]) -> None:
+def write_mcl_input(path: Union[str, Path], edges: Iterable[EdgeRecord]) -> None:
     with Path(path).open("w") as handle:
         for edge in edges:
             handle.write(f"{edge.seq_a}\t{edge.seq_b}\t{format_score(edge.normalized_score)}\n")
 
 
-def read_edge_file(path: str | Path, edge_type: str, same_taxon: bool = False) -> list[EdgeRecord]:
+def read_edge_file(path: Union[str, Path], edge_type: str, same_taxon: bool = False) -> list[EdgeRecord]:
     edges: list[EdgeRecord] = []
     with Path(path).open() as handle:
         for raw_line in handle:

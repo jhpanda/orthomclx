@@ -169,8 +169,14 @@ static int cmp_edge_output(const void *left, const void *right) {
   return 0;
 }
 
-static bool passes_thresholds(const SimilarityRecordBin *record, float percent_match_cutoff, int32_t evalue_exp_cutoff) {
-  return record->percent_match >= percent_match_cutoff && record->evalue_exp <= evalue_exp_cutoff;
+static bool passes_evalue_cutoff(const SimilarityRecordBin *record, float cutoff_mant, int32_t cutoff_exp) {
+  if (record->evalue_mant == 0.0f) return true;
+  if (record->evalue_exp != cutoff_exp) return record->evalue_exp < cutoff_exp;
+  return record->evalue_mant <= cutoff_mant;
+}
+
+static bool passes_thresholds(const SimilarityRecordBin *record, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp) {
+  return record->percent_match >= percent_match_cutoff && passes_evalue_cutoff(record, cutoff_mant, cutoff_exp);
 }
 
 static double score_from_records(const SimilarityRecordBin *left, const SimilarityRecordBin *right, double zero_cutoff) {
@@ -334,22 +340,26 @@ static TaxonPairAgg *get_taxon_pair_agg(TaxonPairAggVec *aggs, uint32_t taxon_a,
   return &aggs->items[aggs->len - 1];
 }
 
-static EdgeVec build_ortholog_edges(GroupVec *groups, RefVec *by_query_taxon, RefVec *by_query_subject, StringVec *proteins, float percent_match_cutoff, int32_t evalue_exp_cutoff, uint32_t shard_index, uint32_t shard_count) {
+static EdgeVec build_ortholog_edges(GroupVec *groups, RefVec *by_query_taxon, RefVec *by_query_subject, StringVec *proteins, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp, uint32_t shard_index, uint32_t shard_count) {
   EdgeVec edges = {0};
   for (size_t i = 0; i < groups->len; i++) {
     QueryTaxonGroup *group = &groups->items[i];
     if (shard_count > 1 && (group->query_id % shard_count) != shard_index) continue;
+    if (i > 0 && i % 50000 == 0) {
+      fprintf(stderr, "[indexed_orthologs] shard %u/%u processed %zu/%zu query-taxon groups, %zu orthologs so far\n",
+              shard_index + 1, shard_count, i, groups->len, edges.len);
+    }
     if (group->best_evalue_exp == INT32_MAX) continue;
     for (uint32_t pos = group->start; pos < group->end; pos++) {
       SimilarityRecordBin *left = &g_records.items[by_query_taxon->items[pos].record_index];
-      if (!passes_thresholds(left, percent_match_cutoff, evalue_exp_cutoff)) continue;
+      if (!passes_thresholds(left, percent_match_cutoff, cutoff_mant, cutoff_exp)) continue;
       if (!qualifies_as_best_hit(left, group)) continue;
       if (strcmp(proteins->items[left->query_id], proteins->items[left->subject_id]) >= 0) continue;
 
       SimilarityRecordBin *right = find_record_by_query_subject(by_query_subject, left->subject_id, left->query_id);
       if (!right) continue;
       if (right->query_taxon_id == right->subject_taxon_id) continue;
-      if (!passes_thresholds(right, percent_match_cutoff, evalue_exp_cutoff)) continue;
+      if (!passes_thresholds(right, percent_match_cutoff, cutoff_mant, cutoff_exp)) continue;
 
       QueryTaxonGroup *reverse_group = find_group(groups, right->query_id, right->subject_taxon_id);
       if (!reverse_group) continue;
@@ -439,11 +449,11 @@ static void free_strings(StringVec *values) {
 }
 
 static void usage(void) {
-  fprintf(stderr, "usage: indexed_orthologs similarities.bin proteins.tsv taxa.tsv out_dir percent_match_cutoff evalue_exp_cutoff [shard_index shard_count]\n");
+  fprintf(stderr, "usage: indexed_orthologs similarities.bin proteins.tsv taxa.tsv out_dir percent_match_cutoff evalue_cutoff_mant evalue_cutoff_exp [shard_index shard_count]\n");
 }
 
 int main(int argc, char **argv) {
-  if (argc != 7 && argc != 9) {
+  if (argc != 8 && argc != 10) {
     usage();
     return 1;
   }
@@ -453,12 +463,13 @@ int main(int argc, char **argv) {
   const char *taxa_path = argv[3];
   const char *out_dir = argv[4];
   float percent_match_cutoff = (float)atof(argv[5]);
-  int32_t evalue_exp_cutoff = (int32_t)atoi(argv[6]);
+  float cutoff_mant = (float)atof(argv[6]);
+  int32_t cutoff_exp = (int32_t)atoi(argv[7]);
   uint32_t shard_index = 0;
   uint32_t shard_count = 1;
-  if (argc == 9) {
-    shard_index = (uint32_t)atoi(argv[7]);
-    shard_count = (uint32_t)atoi(argv[8]);
+  if (argc == 10) {
+    shard_index = (uint32_t)atoi(argv[8]);
+    shard_count = (uint32_t)atoi(argv[9]);
     if (shard_count == 0 || shard_index >= shard_count) die("Invalid shard arguments");
   }
 
@@ -468,7 +479,7 @@ int main(int argc, char **argv) {
   RefVec by_query_taxon = build_sorted_refs(g_records.len, cmp_ref_query_taxon_best);
   RefVec by_query_subject = build_sorted_refs(g_records.len, cmp_ref_query_subject);
   GroupVec groups = build_query_taxon_groups(&by_query_taxon);
-  EdgeVec orthologs = build_ortholog_edges(&groups, &by_query_taxon, &by_query_subject, &proteins, percent_match_cutoff, evalue_exp_cutoff, shard_index, shard_count);
+  EdgeVec orthologs = build_ortholog_edges(&groups, &by_query_taxon, &by_query_subject, &proteins, percent_match_cutoff, cutoff_mant, cutoff_exp, shard_index, shard_count);
 
   make_dir(out_dir);
   char orthologs_path[4096];

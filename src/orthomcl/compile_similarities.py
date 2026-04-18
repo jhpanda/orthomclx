@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, Union
+
+from orthomcl.compat import dataclass
 
 from orthomcl.io import ensure_directory, read_similarity_records
 
@@ -21,8 +23,8 @@ class CompiledSimilaritySummary:
 
 
 def compile_similarities(
-    similar_sequences_path: str | Path,
-    out_dir: str | Path,
+    similar_sequences_path: Union[str, Path],
+    out_dir: Union[str, Path],
 ) -> CompiledSimilaritySummary:
     records = read_similarity_records(similar_sequences_path)
     min_nonzero_exp = min(
@@ -35,10 +37,10 @@ def compile_similarities(
     taxa_path = output_dir / "taxa.tsv"
     binary_path = output_dir / "similarities.bin"
 
-    protein_index: dict[str, int] = {}
-    taxon_index: dict[str, int] = {}
+    protein_index: Dict[str, int] = {}
+    taxon_index: Dict[str, int] = {}
 
-    def get_index(mapping: dict[str, int], value: str) -> int:
+    def get_index(mapping: Dict[str, int], value: str) -> int:
         existing = mapping.get(value)
         if existing is not None:
             return existing
@@ -81,7 +83,7 @@ def compile_similarities(
     )
 
 
-def write_index_file(path: Path, mapping: dict[str, int]) -> None:
+def write_index_file(path: Path, mapping: Dict[str, int]) -> None:
     items = sorted(mapping.items(), key=lambda item: item[1])
     with path.open("w") as handle:
         for value, idx in items:

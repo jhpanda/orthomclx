@@ -182,8 +182,14 @@ static int cmp_edge_output(const void *left, const void *right) {
   return 0;
 }
 
-static bool passes_thresholds(const SimilarityRecordBin *record, float percent_match_cutoff, int32_t evalue_exp_cutoff) {
-  return record->percent_match >= percent_match_cutoff && record->evalue_exp <= evalue_exp_cutoff;
+static bool passes_evalue_cutoff(const SimilarityRecordBin *record, float cutoff_mant, int32_t cutoff_exp) {
+  if (record->evalue_mant == 0.0f) return true;
+  if (record->evalue_exp != cutoff_exp) return record->evalue_exp < cutoff_exp;
+  return record->evalue_mant <= cutoff_mant;
+}
+
+static bool passes_thresholds(const SimilarityRecordBin *record, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp) {
+  return record->percent_match >= percent_match_cutoff && passes_evalue_cutoff(record, cutoff_mant, cutoff_exp);
 }
 
 static double score_from_records(const SimilarityRecordBin *left, const SimilarityRecordBin *right, double zero_cutoff) {
@@ -340,10 +346,10 @@ static SimilarityRecordBin *find_record_by_query_subject(RefVec *refs, uint32_t 
   return NULL;
 }
 
-static bool keep_intra_record(const SimilarityRecordBin *record, QueryGroup *group, float percent_match_cutoff, int32_t evalue_exp_cutoff) {
+static bool keep_intra_record(const SimilarityRecordBin *record, QueryGroup *group, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp) {
   if (record->query_taxon_id != record->subject_taxon_id) return false;
   if (record->query_id == record->subject_id) return false;
-  if (!passes_thresholds(record, percent_match_cutoff, evalue_exp_cutoff)) return false;
+  if (!passes_thresholds(record, percent_match_cutoff, cutoff_mant, cutoff_exp)) return false;
   if (!group || group->best_inter_record_index == UINT32_MAX) return true;
 
   const SimilarityRecordBin *best_inter = &g_records.items[group->best_inter_record_index];
@@ -391,19 +397,23 @@ static bool *load_ortholog_id_mask(const char *orthologs_path, NameIndexVec *pro
   return mask;
 }
 
-static EdgeVec build_inparalog_edges(GroupVec *groups, RefVec *by_query_subject, StringVec *proteins, bool *ortholog_mask, float percent_match_cutoff, int32_t evalue_exp_cutoff, uint32_t shard_index, uint32_t shard_count) {
+static EdgeVec build_inparalog_edges(GroupVec *groups, RefVec *by_query_subject, StringVec *proteins, bool *ortholog_mask, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp, uint32_t shard_index, uint32_t shard_count) {
   EdgeVec edges = {0};
   for (size_t i = 0; i < g_records.len; i++) {
     SimilarityRecordBin *left = &g_records.items[i];
     if (shard_count > 1 && (left->query_id % shard_count) != shard_index) continue;
+    if (i > 0 && i % 1000000 == 0) {
+      fprintf(stderr, "[indexed_inparalogs] shard %u/%u processed %zu/%zu similarity records, %zu inparalogs so far\n",
+              shard_index + 1, shard_count, i, g_records.len, edges.len);
+    }
     QueryGroup *left_group = find_query_group(groups, left->query_id);
-    if (!keep_intra_record(left, left_group, percent_match_cutoff, evalue_exp_cutoff)) continue;
+    if (!keep_intra_record(left, left_group, percent_match_cutoff, cutoff_mant, cutoff_exp)) continue;
     if (strcmp(proteins->items[left->query_id], proteins->items[left->subject_id]) >= 0) continue;
 
     SimilarityRecordBin *right = find_record_by_query_subject(by_query_subject, left->subject_id, left->query_id);
     if (!right) continue;
     QueryGroup *right_group = find_query_group(groups, right->query_id);
-    if (!keep_intra_record(right, right_group, percent_match_cutoff, evalue_exp_cutoff)) continue;
+    if (!keep_intra_record(right, right_group, percent_match_cutoff, cutoff_mant, cutoff_exp)) continue;
 
     InparalogEdge edge;
     if (strcmp(proteins->items[left->query_id], proteins->items[left->subject_id]) < 0) {
@@ -489,11 +499,11 @@ static void free_strings(StringVec *values) {
 }
 
 static void usage(void) {
-  fprintf(stderr, "usage: indexed_inparalogs similarities.bin proteins.tsv taxa.tsv orthologs.txt out_dir percent_match_cutoff evalue_exp_cutoff [shard_index shard_count]\n");
+  fprintf(stderr, "usage: indexed_inparalogs similarities.bin proteins.tsv taxa.tsv orthologs.txt out_dir percent_match_cutoff evalue_cutoff_mant evalue_cutoff_exp [shard_index shard_count]\n");
 }
 
 int main(int argc, char **argv) {
-  if (argc != 8 && argc != 10) {
+  if (argc != 9 && argc != 11) {
     usage();
     return 1;
   }
@@ -504,12 +514,13 @@ int main(int argc, char **argv) {
   const char *orthologs_path = argv[4];
   const char *out_dir = argv[5];
   float percent_match_cutoff = (float)atof(argv[6]);
-  int32_t evalue_exp_cutoff = (int32_t)atoi(argv[7]);
+  float cutoff_mant = (float)atof(argv[7]);
+  int32_t cutoff_exp = (int32_t)atoi(argv[8]);
   uint32_t shard_index = 0;
   uint32_t shard_count = 1;
-  if (argc == 10) {
-    shard_index = (uint32_t)atoi(argv[8]);
-    shard_count = (uint32_t)atoi(argv[9]);
+  if (argc == 11) {
+    shard_index = (uint32_t)atoi(argv[9]);
+    shard_count = (uint32_t)atoi(argv[10]);
     if (shard_count == 0 || shard_index >= shard_count) die("Invalid shard arguments");
   }
 
@@ -521,7 +532,7 @@ int main(int argc, char **argv) {
   GroupVec groups = build_query_groups(&by_query_evalue);
   NameIndexVec protein_map = build_name_index(&proteins);
   bool *ortholog_mask = load_ortholog_id_mask(orthologs_path, &protein_map, proteins.len);
-  EdgeVec edges = build_inparalog_edges(&groups, &by_query_subject, &proteins, ortholog_mask, percent_match_cutoff, evalue_exp_cutoff, shard_index, shard_count);
+  EdgeVec edges = build_inparalog_edges(&groups, &by_query_subject, &proteins, ortholog_mask, percent_match_cutoff, cutoff_mant, cutoff_exp, shard_index, shard_count);
 
   make_dir(out_dir);
   char out_path[4096];

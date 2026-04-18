@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, Union
 
 
 def mcl_to_groups_stream(input_handle: TextIO, output_handle: TextIO, prefix: str, start_id: int) -> None:
@@ -13,6 +13,6 @@ def mcl_to_groups_stream(input_handle: TextIO, output_handle: TextIO, prefix: st
         current_id += 1
 
 
-def mcl_to_groups_file(input_path: str | Path, output_path: str | Path, prefix: str, start_id: int) -> None:
+def mcl_to_groups_file(input_path: Union[str, Path], output_path: Union[str, Path], prefix: str, start_id: int) -> None:
     with Path(input_path).open() as input_handle, Path(output_path).open("w") as output_handle:
         mcl_to_groups_stream(input_handle, output_handle, prefix, start_id)

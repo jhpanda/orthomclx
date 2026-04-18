@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, Set, Tuple, Union
+
+from orthomcl.compat import dataclass
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,7 +14,7 @@ class BlastHit:
     bits: float
 
 
-def read_blast_m8_hits(path: str | Path) -> list[BlastHit]:
+def read_blast_m8_hits(path: Union[str, Path]) -> list[BlastHit]:
     hits: list[BlastHit] = []
     with Path(path).open() as handle:
         for line_number, raw_line in enumerate(handle, start=1):
@@ -33,8 +35,8 @@ def read_blast_m8_hits(path: str | Path) -> list[BlastHit]:
     return hits
 
 
-def reciprocal_best_hits(hits: list[BlastHit]) -> set[tuple[str, str]]:
-    best_by_query: dict[str, BlastHit] = {}
+def reciprocal_best_hits(hits: list[BlastHit]) -> Set[Tuple[str, str]]:
+    best_by_query: Dict[str, BlastHit] = {}
     for hit in hits:
         current = best_by_query.get(hit.query_id)
         if current is None or (hit.evalue, -hit.bits, hit.subject_id) < (
@@ -44,7 +46,7 @@ def reciprocal_best_hits(hits: list[BlastHit]) -> set[tuple[str, str]]:
         ):
             best_by_query[hit.query_id] = hit
 
-    pairs: set[tuple[str, str]] = set()
+    pairs: Set[Tuple[str, str]] = set()
     for query_id, best_hit in best_by_query.items():
         reverse = best_by_query.get(best_hit.subject_id)
         if reverse is None or reverse.subject_id != query_id:
@@ -53,8 +55,8 @@ def reciprocal_best_hits(hits: list[BlastHit]) -> set[tuple[str, str]]:
     return pairs
 
 
-def read_rbh_pairs(path: str | Path) -> set[tuple[str, str]]:
-    pairs: set[tuple[str, str]] = set()
+def read_rbh_pairs(path: Union[str, Path]) -> Set[Tuple[str, str]]:
+    pairs: Set[Tuple[str, str]] = set()
     with Path(path).open() as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             line = raw_line.strip()

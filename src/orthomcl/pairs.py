@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from collections import defaultdict
 from pathlib import Path
+from typing import Union
 
 from orthomcl.io import (
     ensure_directory,
@@ -45,8 +46,8 @@ def average(values: list[float]) -> float:
 
 
 def build_pairs(
-    similar_sequences_path: str | Path,
-    out_dir: str | Path,
+    similar_sequences_path: Union[str, Path],
+    out_dir: Union[str, Path],
     percent_match_cutoff: float,
     evalue_exp_cutoff: int,
     engine: str = "python",
@@ -72,8 +73,8 @@ def build_pairs(
 
 
 def build_pairs_python(
-    similar_sequences_path: str | Path,
-    out_dir: str | Path,
+    similar_sequences_path: Union[str, Path],
+    out_dir: Union[str, Path],
     percent_match_cutoff: float,
     evalue_exp_cutoff: int,
 ) -> dict[str, list[EdgeRecord]]:
@@ -125,8 +126,8 @@ def ensure_c_engine_built() -> Path:
 
 
 def build_pairs_c(
-    similar_sequences_path: str | Path,
-    out_dir: str | Path,
+    similar_sequences_path: Union[str, Path],
+    out_dir: Union[str, Path],
     percent_match_cutoff: float,
     evalue_exp_cutoff: int,
 ) -> dict[str, list[EdgeRecord]]:

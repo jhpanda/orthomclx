@@ -4,6 +4,7 @@ import argparse
 import difflib
 import filecmp
 from pathlib import Path
+from typing import List, Optional
 
 from orthomcl.groups import mcl_to_groups_file
 from orthomcl.pairs import build_pairs
@@ -49,7 +50,7 @@ def compare_python_outputs(fixture_dir: Path, work_dir: Path) -> None:
     assert_file_equal(work_dir / "python" / "groups.txt", expected_dir / "groups.txt")
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Compare Python rewrite outputs against the fixture outputs.")
     parser.add_argument(
         "--fixture",

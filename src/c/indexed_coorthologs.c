@@ -335,8 +335,14 @@ static SimilarityRecordBin *find_record(RefVec *refs, uint32_t query_id, uint32_
   return NULL;
 }
 
-static bool passes_thresholds(const SimilarityRecordBin *record, float percent_match_cutoff, int32_t evalue_exp_cutoff) {
-  return record->percent_match >= percent_match_cutoff && record->evalue_exp <= evalue_exp_cutoff;
+static bool passes_evalue_cutoff(const SimilarityRecordBin *record, float cutoff_mant, int32_t cutoff_exp) {
+  if (record->evalue_mant == 0.0f) return true;
+  if (record->evalue_exp != cutoff_exp) return record->evalue_exp < cutoff_exp;
+  return record->evalue_mant <= cutoff_mant;
+}
+
+static bool passes_thresholds(const SimilarityRecordBin *record, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp) {
+  return record->percent_match >= percent_match_cutoff && passes_evalue_cutoff(record, cutoff_mant, cutoff_exp);
 }
 
 static double score_from_records(const SimilarityRecordBin *left, const SimilarityRecordBin *right, double zero_cutoff) {
@@ -407,7 +413,8 @@ static void maybe_add_coortholog(
     uint32_t seq_a,
     uint32_t seq_b,
     float percent_match_cutoff,
-    int32_t evalue_exp_cutoff
+    float cutoff_mant,
+    int32_t cutoff_exp
 ) {
   uint32_t first = seq_a;
   uint32_t second = seq_b;
@@ -423,8 +430,8 @@ static void maybe_add_coortholog(
   SimilarityRecordBin *left = find_record(by_query_subject, first, second);
   SimilarityRecordBin *right = find_record(by_query_subject, second, first);
   if (!left || !right) return;
-  if (!passes_thresholds(left, percent_match_cutoff, evalue_exp_cutoff)) return;
-  if (!passes_thresholds(right, percent_match_cutoff, evalue_exp_cutoff)) return;
+  if (!passes_thresholds(left, percent_match_cutoff, cutoff_mant, cutoff_exp)) return;
+  if (!passes_thresholds(right, percent_match_cutoff, cutoff_mant, cutoff_exp)) return;
 
   CoorthologEdge edge;
   edge.seq_a = first;
@@ -458,7 +465,8 @@ static EdgeVec build_coortholog_edges(
     RefVec *by_query_subject,
     StringVec *proteins,
     float percent_match_cutoff,
-    int32_t evalue_exp_cutoff,
+    float cutoff_mant,
+    int32_t cutoff_exp,
     uint32_t shard_index,
     uint32_t shard_count
 ) {
@@ -469,9 +477,15 @@ static EdgeVec build_coortholog_edges(
   if (!target_marks) die("Out of memory");
   uint32_t mark_generation = 1;
   UIntVec target_nodes = {0};
+  uint32_t processed_sources = 0;
 
   for (uint32_t source = 0; source < in_graph->len; source++) {
     if (shard_count > 1 && (source % shard_count) != shard_index) continue;
+    processed_sources += 1;
+    if (processed_sources % 10000 == 0) {
+      fprintf(stderr, "[indexed_coorthologs] shard %u/%u processed %u source proteins, %zu coorthologs so far\n",
+              shard_index + 1, shard_count, processed_sources, edges.len);
+    }
     UIntVec *in_neighbors = &in_graph->items[source];
     if (in_neighbors->len == 0) continue;
     UIntVec *orth_neighbors = find_neighbors(orth_graph, source);
@@ -506,7 +520,7 @@ static EdgeVec build_coortholog_edges(
         maybe_add_coortholog(
             &edges, &seen_pairs, orth_graph, by_query_subject, proteins,
             in_neighbors->items[a], target_nodes.items[t],
-            percent_match_cutoff, evalue_exp_cutoff);
+            percent_match_cutoff, cutoff_mant, cutoff_exp);
       }
     }
   }
@@ -588,11 +602,11 @@ static void free_graph(NeighborGraph *graph) {
 }
 
 static void usage(void) {
-  fprintf(stderr, "usage: indexed_coorthologs similarities.bin proteins.tsv taxa.tsv orthologs.txt inparalogs.txt out_dir percent_match_cutoff evalue_exp_cutoff [shard_index shard_count]\n");
+  fprintf(stderr, "usage: indexed_coorthologs similarities.bin proteins.tsv taxa.tsv orthologs.txt inparalogs.txt out_dir percent_match_cutoff evalue_cutoff_mant evalue_cutoff_exp [shard_index shard_count]\n");
 }
 
 int main(int argc, char **argv) {
-  if (argc != 9 && argc != 11) {
+  if (argc != 10 && argc != 12) {
     usage();
     return 1;
   }
@@ -604,12 +618,13 @@ int main(int argc, char **argv) {
   const char *inparalogs_path = argv[5];
   const char *out_dir = argv[6];
   float percent_match_cutoff = (float)atof(argv[7]);
-  int32_t evalue_exp_cutoff = (int32_t)atoi(argv[8]);
+  float cutoff_mant = (float)atof(argv[8]);
+  int32_t cutoff_exp = (int32_t)atoi(argv[9]);
   uint32_t shard_index = 0;
   uint32_t shard_count = 1;
-  if (argc == 11) {
-    shard_index = (uint32_t)atoi(argv[9]);
-    shard_count = (uint32_t)atoi(argv[10]);
+  if (argc == 12) {
+    shard_index = (uint32_t)atoi(argv[10]);
+    shard_count = (uint32_t)atoi(argv[11]);
     if (shard_count == 0 || shard_index >= shard_count) die("Invalid shard arguments");
   }
 
@@ -622,7 +637,7 @@ int main(int argc, char **argv) {
   NeighborGraph in_graph = init_neighbor_graph(proteins.len);
   load_pair_graph(orthologs_path, &protein_map, &orth_graph);
   load_pair_graph(inparalogs_path, &protein_map, &in_graph);
-  EdgeVec edges = build_coortholog_edges(&orth_graph, &in_graph, &by_query_subject, &proteins, percent_match_cutoff, evalue_exp_cutoff, shard_index, shard_count);
+  EdgeVec edges = build_coortholog_edges(&orth_graph, &in_graph, &by_query_subject, &proteins, percent_match_cutoff, cutoff_mant, cutoff_exp, shard_index, shard_count);
 
   make_dir(out_dir);
   char out_path[4096];

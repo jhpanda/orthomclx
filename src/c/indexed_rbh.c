@@ -172,10 +172,20 @@ static RefVec build_sorted_refs(size_t record_count) {
   return refs;
 }
 
-static BestHitVec build_best_hits(RefVec *sorted_refs, float percent_match_cutoff, int32_t evalue_exp_cutoff) {
+static bool passes_evalue_cutoff(const SimilarityRecordBin *record, float cutoff_mant, int32_t cutoff_exp) {
+  if (record->evalue_mant == 0.0f) return true;
+  if (record->evalue_exp != cutoff_exp) return record->evalue_exp < cutoff_exp;
+  return record->evalue_mant <= cutoff_mant;
+}
+
+static BestHitVec build_best_hits(RefVec *sorted_refs, float percent_match_cutoff, float cutoff_mant, int32_t cutoff_exp) {
   BestHitVec groups = {0};
   size_t i = 0;
   while (i < sorted_refs->len) {
+    if (i > 0 && i % 1000000 == 0) {
+      fprintf(stderr, "[indexed_rbh] processed %zu/%zu sorted similarity references, %zu best-hit buckets so far\n",
+              i, sorted_refs->len, groups.len);
+    }
     const SimilarityRecordBin *first = &g_records.items[sorted_refs->items[i].record_index];
     uint32_t query_id = first->query_id;
     uint32_t query_taxon_id = first->query_taxon_id;
@@ -196,7 +206,7 @@ static BestHitVec build_best_hits(RefVec *sorted_refs, float percent_match_cutof
       if (record->query_id != query_id || record->subject_taxon_id != subject_taxon_id) break;
       if (record->query_taxon_id != record->subject_taxon_id &&
           record->percent_match >= percent_match_cutoff &&
-          record->evalue_exp <= evalue_exp_cutoff) {
+          passes_evalue_cutoff(record, cutoff_mant, cutoff_exp)) {
         if (!have_best) {
           group.best_subject_id = record->subject_id;
           group.best_evalue_exp = record->evalue_exp;
@@ -250,6 +260,10 @@ static void write_rbh(const char *path, BestHitVec *best_hits, StringVec *protei
   FILE *handle = fopen(path, "w");
   if (!handle) die("Could not open RBH output");
   for (size_t i = 0; i < best_hits->len; i++) {
+    if (i > 0 && i % 250000 == 0) {
+      fprintf(stderr, "[indexed_rbh] shard %u/%u wrote %zu/%zu best-hit buckets\n",
+              shard_index + 1, shard_count, i, best_hits->len);
+    }
     BestHitGroup *left = &best_hits->items[i];
     if (shard_count > 1 && (left->query_id % shard_count) != shard_index) continue;
     if (!left->unique_best) continue;
@@ -275,11 +289,11 @@ static void free_strings(StringVec *values) {
 }
 
 static void usage(void) {
-  fprintf(stderr, "usage: indexed_rbh similarities.bin proteins.tsv taxa.tsv out_dir percent_match_cutoff evalue_exp_cutoff [shard_index shard_count]\n");
+  fprintf(stderr, "usage: indexed_rbh similarities.bin proteins.tsv taxa.tsv out_dir percent_match_cutoff evalue_cutoff_mant evalue_cutoff_exp [shard_index shard_count]\n");
 }
 
 int main(int argc, char **argv) {
-  if (argc != 7 && argc != 9) {
+  if (argc != 8 && argc != 10) {
     usage();
     return 1;
   }
@@ -289,12 +303,13 @@ int main(int argc, char **argv) {
   const char *taxa_path = argv[3];
   const char *out_dir = argv[4];
   float percent_match_cutoff = (float)atof(argv[5]);
-  int32_t evalue_exp_cutoff = (int32_t)atoi(argv[6]);
+  float cutoff_mant = (float)atof(argv[6]);
+  int32_t cutoff_exp = (int32_t)atoi(argv[7]);
   uint32_t shard_index = 0;
   uint32_t shard_count = 1;
-  if (argc == 9) {
-    shard_index = (uint32_t)atoi(argv[7]);
-    shard_count = (uint32_t)atoi(argv[8]);
+  if (argc == 10) {
+    shard_index = (uint32_t)atoi(argv[8]);
+    shard_count = (uint32_t)atoi(argv[9]);
     if (shard_count == 0 || shard_index >= shard_count) die("Invalid shard arguments");
   }
 
@@ -302,7 +317,7 @@ int main(int argc, char **argv) {
   StringVec proteins = read_index_values(proteins_path);
   StringVec taxa = read_index_values(taxa_path);
   RefVec refs = build_sorted_refs(g_records.len);
-  BestHitVec best_hits = build_best_hits(&refs, percent_match_cutoff, evalue_exp_cutoff);
+  BestHitVec best_hits = build_best_hits(&refs, percent_match_cutoff, cutoff_mant, cutoff_exp);
 
   make_dir(out_dir);
   char out_path[4096];

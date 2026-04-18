@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Iterable, Iterator, Optional, Tuple, Union
+
+from orthomcl.compat import dataclass
 
 
 @dataclass(slots=True)
@@ -17,9 +18,9 @@ class FilterStats:
     rejected_sequences: int = 0
 
 
-def read_fasta_records(path: str | Path) -> Iterator[FastaRecord]:
+def read_fasta_records(path: Union[str, Path]) -> Iterator[FastaRecord]:
     file_path = Path(path)
-    header: str | None = None
+    header: Optional[str] = None
     sequence_parts: list[str] = []
 
     with file_path.open() as handle:
@@ -54,7 +55,7 @@ def normalize_header_fields(header: str) -> list[str]:
     return fields
 
 
-def adjust_fasta(taxon_code: str, input_path: str | Path, id_field: int, output_path: str | Path) -> None:
+def adjust_fasta(taxon_code: str, input_path: Union[str, Path], id_field: int, output_path: Union[str, Path]) -> None:
     if id_field < 1:
         raise ValueError("id_field must be >= 1")
 
@@ -75,7 +76,7 @@ def adjust_fasta(taxon_code: str, input_path: str | Path, id_field: int, output_
             write_fasta_record(out_handle, f"{taxon_code}|{protein_id}", record.sequence)
 
 
-def iter_compliant_fastas(input_dir: str | Path) -> Iterable[Path]:
+def iter_compliant_fastas(input_dir: Union[str, Path]) -> Iterable[Path]:
     directory = Path(input_dir)
     for path in sorted(directory.iterdir()):
         if path.name.startswith("."):
@@ -92,7 +93,7 @@ def validate_compliant_header(header: str, expected_taxon: str) -> None:
         )
 
 
-def sanitize_sequence_for_filter(sequence: str) -> tuple[str, int, int]:
+def sanitize_sequence_for_filter(sequence: str) -> Tuple[str, int, int]:
     raw_length = len(sequence)
     cleaned = "".join(char for char in sequence if char.isalpha())
     removed_count = raw_length - len(cleaned)
@@ -100,11 +101,11 @@ def sanitize_sequence_for_filter(sequence: str) -> tuple[str, int, int]:
 
 
 def filter_fasta_dir(
-    input_dir: str | Path,
+    input_dir: Union[str, Path],
     min_length: int,
     max_percent_stop: float,
-    good_output_path: str | Path,
-    poor_output_path: str | Path,
+    good_output_path: Union[str, Path],
+    poor_output_path: Union[str, Path],
 ) -> list[tuple[str, float]]:
     reject_rates: list[tuple[str, float]] = []
 

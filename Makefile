@@ -2,9 +2,9 @@ PYTHON ?= python3
 CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra
 
-.PHONY: all clean test build-cli build-c-engine build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
+.PHONY: all clean test build-cli build-c-engine build-parse-blast-compiled build-indexed-orthologs build-indexed-inparalogs build-indexed-coorthologs build-indexed-rbh build-mcl
 
-all: build/orthomclx build/pairs_engine build/indexed_orthologs build/indexed_inparalogs build/indexed_coorthologs build/indexed_rbh build/mcl
+all: build/orthomclx build/pairs_engine build/parse_blast_compiled build/indexed_orthologs build/indexed_inparalogs build/indexed_coorthologs build/indexed_rbh build/mcl
 
 build/orthomclx: src/orthomcl/cli.py
 	mkdir -p build
@@ -18,6 +18,12 @@ build/pairs_engine: src/c/pairs_engine.c
 	$(CC) $(CFLAGS) $< -lm -o $@
 
 build-c-engine: build/pairs_engine
+
+build/parse_blast_compiled: src/c/parse_blast_compiled.c
+	mkdir -p build
+	$(CC) $(CFLAGS) $< -lm -o $@
+
+build-parse-blast-compiled: build/parse_blast_compiled
 
 build/indexed_orthologs: src/c/indexed_orthologs.c
 	mkdir -p build
@@ -51,10 +57,15 @@ build/mcl: src/mcl/configure
 		exit 1; \
 	fi
 	@echo "Building vendored MCL from src/mcl"
-	@cd src/mcl && if [ ! -f Makefile ]; then arch=$$(uname -m); \
-		if [ "$$arch" = "arm64" ] || [ "$$arch" = "aarch64" ]; then build_triplet="arm-apple-darwin"; \
-		else build_triplet="$$arch-apple-darwin"; fi; \
-		CFLAGS="$$CFLAGS -fcommon" ./configure --build="$$build_triplet"; \
+	@cd src/mcl && if [ ! -f Makefile ]; then build_triplet=$$(sh autofoo/config.guess); \
+		if ! CFLAGS="$$CFLAGS -fcommon" ./configure --build="$$build_triplet"; then \
+			arch=$$(uname -m); \
+			if [ "$$arch" = "arm64" ] || [ "$$arch" = "aarch64" ]; then \
+				CFLAGS="$$CFLAGS -fcommon" ./configure --build="arm-apple-darwin"; \
+			else \
+				exit 1; \
+			fi; \
+		fi; \
 	fi
 	@$(MAKE) -C src/mcl/util libutil.a
 	@$(MAKE) -C src/mcl/src/clew libclew.a

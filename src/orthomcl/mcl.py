@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
+
+from orthomcl.compat import dataclass
 
 
 @dataclass(slots=True)
@@ -11,7 +13,7 @@ class MclRunConfig:
     input_path: Path
     output_path: Path
     inflation: float = 1.5
-    threads: int | None = None
+    threads: Optional[int] = None
     binary: str = "mcl"
 
 

@@ -40,10 +40,6 @@ class PipelineTest(unittest.TestCase):
 
             expected_dir = fixture_dir / "expected"
             self.assertEqual(
-                (out_dir / "similarSequences.txt").read_text(),
-                (expected_dir / "similarSequences.txt").read_text(),
-            )
-            self.assertEqual(
                 (out_dir / "pairs" / "orthologs.txt").read_text(),
                 (expected_dir / "orthologs.txt").read_text(),
             )

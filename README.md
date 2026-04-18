@@ -2,6 +2,8 @@
 
 Modern C/Python rewrite of the OrthoMCL workflow.
 
+Python requirement: 3.9 or newer.
+
 ## Rationale
 
 This project replaces the old Perl + MySQL OrthoMCL implementation with a
@@ -76,7 +78,7 @@ The package exposes the `orthomclx` command:
 ```bash
 orthomclx adjust-fasta
 orthomclx filter-fasta
-orthomclx parse-blast
+orthomclx parse-blast-compiled
 orthomclx compile-similarities
 orthomclx pairs
 orthomclx indexed-orthologs
@@ -100,7 +102,7 @@ orthomclx --input compliantFasta \
   --blast blast.tsv \
   --out run_dir \
   --pcut 30 \
-  --ecut -3 \
+  --ecut 1e-3 \
   --jobs 2 \
   --run-mcl
 ```
@@ -108,7 +110,6 @@ orthomclx --input compliantFasta \
 This parses BLAST output, compiles similarities, runs the indexed pair stages,
 optionally runs `mcl`, and writes:
 
-- `run_dir/similarSequences.txt`
 - `run_dir/compiled/`
 - `run_dir/pairs/orthologs.txt`
 - `run_dir/pairs/inparalogs.txt`
@@ -118,16 +119,13 @@ optionally runs `mcl`, and writes:
 - `run_dir/mclOutput` when `--run-mcl` is used
 - `run_dir/groups.txt` when `--run-mcl` or `--mcl-output` is used
 
+Long-running stages print progress messages so large BLAST and pair-building
+runs are easier to monitor.
+
 There are two ways to include the MCL step:
 
 - use `--run-mcl` to run MCL directly after `mclInput` is generated
 - use `--mcl-output existing_mclOutput` if you already ran MCL elsewhere
-
-### 1. Parse BLAST output
-
-```bash
-PYTHONPATH=src python3 -m orthomcl.cli parse-blast blast.tsv compliantFasta -o similarSequences.txt
-```
 
 ### 2. Compile similarities into binary form
 
@@ -141,12 +139,18 @@ This produces:
 - `proteins.tsv`
 - `taxa.tsv`
 
+Or parse BLAST directly into compiled form:
+
+```bash
+PYTHONPATH=src python3 -m orthomcl.cli parse-blast-compiled blast.tsv compliantFasta compiled_dir
+```
+
 ### 3. Run the indexed pipeline
 
 ```bash
 PYTHONPATH=src python3 -m orthomcl.cli indexed-pairs compiled_dir out_dir \
   --percent-match-cutoff 30 \
-  --evalue-exp-cutoff -3 \
+  --evalue-cutoff 1e-3 \
   --jobs 2
 ```
 
@@ -187,6 +191,7 @@ replace it with a newer upstream release from
 
 ```bash
 make build-c-engine
+make build-parse-blast-compiled
 make build-indexed-orthologs
 make build-indexed-inparalogs
 make build-indexed-coorthologs

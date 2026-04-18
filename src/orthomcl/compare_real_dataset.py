@@ -3,10 +3,10 @@ from __future__ import annotations
 import argparse
 import filecmp
 import re
-from dataclasses import dataclass
 from pathlib import Path
+from typing import List, Optional, Tuple
 
-from orthomcl.blast_parser import parse_blast_m8
+from orthomcl.compat import dataclass
 from orthomcl.pairs import build_pairs
 
 
@@ -32,7 +32,7 @@ def summarize_file(path: Path) -> FileSummary:
     return FileSummary(path=path, size_bytes=path.stat().st_size, line_count=count_lines(path))
 
 
-def choose_blast_source(dataset_dir: Path, explicit: str | None) -> Path:
+def choose_blast_source(dataset_dir: Path, explicit: Optional[str]) -> Path:
     if explicit:
         candidate = dataset_dir / explicit
         if not candidate.exists():
@@ -54,11 +54,11 @@ def choose_blast_source(dataset_dir: Path, explicit: str | None) -> Path:
     raise FileNotFoundError("Could not determine BLAST source file")
 
 
-def compare_files(left: Path, right: Path, sample_limit: int = 5) -> tuple[bool, list[str]]:
+def compare_files(left: Path, right: Path, sample_limit: int = 5) -> Tuple[bool, List[str]]:
     if filecmp.cmp(left, right, shallow=False):
         return True, []
 
-    mismatches: list[str] = []
+    mismatches: List[str] = []
     with left.open() as lf, right.open() as rf:
         for line_number, (l_line, r_line) in enumerate(zip(lf, rf), start=1):
             if l_line != r_line:
@@ -103,21 +103,6 @@ def print_summary(dataset_dir: Path, blast_source: Path) -> None:
     )
 
 
-def run_parser_compare(dataset_dir: Path, blast_source: Path, out_dir: Path) -> bool:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    generated = out_dir / "similarSequences.generated.txt"
-    with generated.open("w") as handle:
-        parse_blast_m8(blast_source, dataset_dir / "compliantFasta", handle)
-
-    target = dataset_dir / "similarSequence_orthomcl.txt"
-    identical, mismatches = compare_files(generated, target)
-    print(f"parser compare against {target.name}: {'MATCH' if identical else 'DIFFER'}")
-    if not identical:
-        for mismatch in mismatches:
-            print(f"  {mismatch}")
-    return identical
-
-
 def run_pairs_compare(dataset_dir: Path, parsed_input: Path, out_dir: Path, engine: str) -> bool:
     build_pairs(
         parsed_input,
@@ -144,7 +129,7 @@ def run_pairs_compare(dataset_dir: Path, parsed_input: Path, out_dir: Path, engi
     return all_ok
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Summary-first comparison harness for the saved real OrthoMCL dataset."
     )
@@ -166,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--run-parser",
         action="store_true",
-        help="Regenerate similarSequences.txt from the chosen BLAST file and compare it",
+        help="Deprecated: parser text regeneration is no longer supported",
     )
     parser.add_argument(
         "--run-pairs",
@@ -192,16 +177,14 @@ def main(argv: list[str] | None = None) -> int:
     print_summary(dataset_dir, blast_source)
 
     parser_ok = True
-    generated_parsed = work_dir / "parser" / "similarSequences.generated.txt"
     if args.run_parser:
-        parser_ok = run_parser_compare(dataset_dir, blast_source, work_dir / "parser")
+        print("Parser text regeneration is no longer supported; use parse-blast-compiled instead.")
+        parser_ok = False
 
     pairs_ok = True
     if args.run_pairs:
         if args.parsed_input:
             parsed_input = Path(args.parsed_input)
-        elif args.run_parser:
-            parsed_input = generated_parsed
         else:
             parsed_input = dataset_dir / "similarSequence_orthomcl.txt"
         pairs_ok = run_pairs_compare(dataset_dir, parsed_input, work_dir / "pairs", args.engine)
@@ -211,4 +194,3 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print("Comparison completed with mismatches.")
     return 1
-

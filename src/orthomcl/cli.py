@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import List, Optional
 
-from orthomcl.blast_parser import parse_blast_m8
 from orthomcl.compile_similarities import compile_similarities
 from orthomcl.fasta import adjust_fasta, filter_fasta_dir
 from orthomcl.groups import mcl_to_groups_file
 from orthomcl.indexed_pairs import run_indexed_pairs
 from orthomcl.mcl import MclRunConfig, run_mcl
+from orthomcl.parse_blast_compiled import parse_blast_to_compiled
 from orthomcl.pairs import build_pairs
 from orthomcl.pipeline import IntegratedRunConfig, RunConfig, run_integrated_pipeline, run_pipeline
 
@@ -39,10 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--ecut",
+        "--evalue-cutoff",
         "--evalue-exp-cutoff",
         dest="integrated_evalue_exp_cutoff",
-        type=int,
-        help="Integrated mode: maximum allowed e-value exponent",
+        type=float,
+        help="Integrated mode: maximum allowed e-value, for example 1e-3 or 0.05",
     )
     parser.add_argument(
         "--jobs",
@@ -97,21 +99,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=False)
 
-    parse_blast = subparsers.add_parser(
-        "parse-blast",
-        help="Parse BLAST m8 output into OrthoMCL similarity rows",
-    )
-    parse_blast.add_argument("blast_file", help="BLAST output in m8 format")
-    parse_blast.add_argument(
-        "fasta_dir",
-        help="Directory of compliant FASTA files named as taxon.fasta",
-    )
-    parse_blast.add_argument(
-        "-o",
-        "--output",
-        help="Write parsed output to this file instead of stdout",
-    )
-
     adjust = subparsers.add_parser(
         "adjust-fasta",
         help="Convert FASTA headers into OrthoMCL-compliant taxon|id headers",
@@ -160,10 +147,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum percent match cutoff",
     )
     pairs_parser.add_argument(
+        "--evalue-cutoff",
         "--evalue-exp-cutoff",
-        type=int,
+        type=float,
         required=True,
-        help="Maximum allowed e-value exponent",
+        help="Maximum allowed e-value, for example 1e-3 or 0.05",
     )
     pairs_parser.add_argument(
         "--engine",
@@ -216,7 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser(
         "run",
-        help="Run parse-blast and pairs, optionally run MCL, and write groups.txt",
+        help="Run direct BLAST-to-binary parsing and indexed pairs, optionally run MCL, and write groups.txt",
     )
     run_parser.add_argument("--blast", required=True, help="BLAST output in m8 format")
     run_parser.add_argument(
@@ -232,10 +220,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum percent match cutoff",
     )
     run_parser.add_argument(
+        "--evalue-cutoff",
         "--evalue-exp-cutoff",
-        type=int,
+        type=float,
         required=True,
-        help="Maximum allowed e-value exponent",
+        help="Maximum allowed e-value, for example 1e-3 or 0.05",
     )
     run_parser.add_argument(
         "--run-mcl",
@@ -274,10 +263,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Starting numeric suffix for groups.txt generation",
     )
     run_parser.add_argument(
-        "--engine",
-        choices=["auto", "python", "c"],
-        default="python",
-        help="Execution engine for the heavy pair-building stage",
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of parallel shard workers to use per indexed stage",
     )
 
     compile_parser = subparsers.add_parser(
@@ -286,6 +275,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     compile_parser.add_argument("similar_sequences", help="Parsed similarity file")
     compile_parser.add_argument("out_dir", help="Output directory for compiled artifacts")
+
+    parse_compiled = subparsers.add_parser(
+        "parse-blast-compiled",
+        help="Parse BLAST m8 directly into compiled binary and index files using the C parser",
+    )
+    parse_compiled.add_argument("blast_file", help="BLAST output in m8 format")
+    parse_compiled.add_argument(
+        "fasta_dir",
+        help="Directory of compliant FASTA files named as taxon.fasta",
+    )
+    parse_compiled.add_argument("out_dir", help="Output directory for compiled artifacts")
 
     indexed_orthologs = subparsers.add_parser(
         "indexed-orthologs",
@@ -300,10 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum percent match cutoff",
     )
     indexed_orthologs.add_argument(
+        "--evalue-cutoff",
         "--evalue-exp-cutoff",
-        type=int,
+        type=float,
         required=True,
-        help="Maximum allowed e-value exponent",
+        help="Maximum allowed e-value, for example 1e-3 or 0.05",
     )
 
     indexed_inparalogs = subparsers.add_parser(
@@ -320,10 +321,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum percent match cutoff",
     )
     indexed_inparalogs.add_argument(
+        "--evalue-cutoff",
         "--evalue-exp-cutoff",
-        type=int,
+        type=float,
         required=True,
-        help="Maximum allowed e-value exponent",
+        help="Maximum allowed e-value, for example 1e-3 or 0.05",
     )
 
     indexed_coorthologs = subparsers.add_parser(
@@ -341,10 +343,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum percent match cutoff",
     )
     indexed_coorthologs.add_argument(
+        "--evalue-cutoff",
         "--evalue-exp-cutoff",
-        type=int,
+        type=float,
         required=True,
-        help="Maximum allowed e-value exponent",
+        help="Maximum allowed e-value, for example 1e-3 or 0.05",
     )
 
     indexed_pairs = subparsers.add_parser(
@@ -360,10 +363,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum percent match cutoff",
     )
     indexed_pairs.add_argument(
+        "--evalue-cutoff",
         "--evalue-exp-cutoff",
-        type=int,
+        type=float,
         required=True,
-        help="Maximum allowed e-value exponent",
+        help="Maximum allowed e-value, for example 1e-3 or 0.05",
     )
     indexed_pairs.add_argument(
         "--jobs",
@@ -374,7 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -392,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.print_help()
             return 0
 
-        missing: list[str] = []
+        missing: List[str] = []
         if not args.input:
             missing.append("--input")
         if not args.blast:
@@ -431,16 +435,6 @@ def main(argv: list[str] | None = None) -> int:
             f"rbh_1to1={summary.rbh_count}, "
             f"mcl={summary.mcl_count}\n"
         )
-        return 0
-
-    if args.command == "parse-blast":
-        if args.output:
-            output_path = Path(args.output)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with output_path.open("w") as handle:
-                parse_blast_m8(args.blast_file, args.fasta_dir, handle)
-        else:
-            parse_blast_m8(args.blast_file, args.fasta_dir, sys.stdout)
         return 0
 
     if args.command == "adjust-fasta":
@@ -514,13 +508,25 @@ def main(argv: list[str] | None = None) -> int:
                 mcl_threads=args.mcl_threads,
                 groups_prefix=args.groups_prefix,
                 start_group_id=args.start_group_id,
-                engine=args.engine,
+                jobs=args.jobs,
             )
         )
         return 0
 
     if args.command == "compile-similarities":
         summary = compile_similarities(args.similar_sequences, args.out_dir)
+        sys.stdout.write(
+            f"compiled {summary.record_count} records, "
+            f"{summary.protein_count} proteins, "
+            f"{summary.taxon_count} taxa\n"
+        )
+        sys.stdout.write(f"binary: {summary.binary_path}\n")
+        sys.stdout.write(f"proteins: {summary.proteins_path}\n")
+        sys.stdout.write(f"taxa: {summary.taxa_path}\n")
+        return 0
+
+    if args.command == "parse-blast-compiled":
+        summary = parse_blast_to_compiled(args.blast_file, args.fasta_dir, args.out_dir)
         sys.stdout.write(
             f"compiled {summary.record_count} records, "
             f"{summary.protein_count} proteins, "

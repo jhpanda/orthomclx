@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from orthomcl.compat import dataclass
 
 
 @dataclass(frozen=True, slots=True)
