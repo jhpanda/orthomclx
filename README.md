@@ -1,6 +1,6 @@
-# orthomcl_c
+# orthomclx
 
-Modern C/Python rewrite of the OrthoMCL workflow.
+C/Python rewrite of the OrthoMCL workflow.
 
 Python requirement: 3.9 or newer.
 
